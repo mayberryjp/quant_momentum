@@ -44,8 +44,13 @@ def test_parse_backfill_requires_dates() -> None:
     assert args.to_date == "2026-02-01"
 
 
-def test_dispatch_run_summary_stub_returns_zero() -> None:
+def test_dispatch_run_summary_dispatches(monkeypatch) -> None:
+    import quant_momentum.runner as runner
+
+    captured: list = []
+    monkeypatch.setattr(runner, "run_summary_command", lambda args: captured.append(args) or 0)
     assert main(["run-summary", "--latest"]) == 0
+    assert captured and captured[0].latest is True
 
 
 def test_db_upgrade_dispatches_to_db_module(monkeypatch) -> None:

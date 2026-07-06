@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 from quant_momentum.config import Settings, get_settings
+from quant_momentum.lock import run_lock
 from quant_momentum.momentum import compute_momentum
 from quant_momentum.persistence import DailyMomentumRow
 from quant_momentum.signals import SubmitOutcome, build_payload
@@ -285,17 +286,21 @@ def run_command(args) -> int:
     engine = get_engine()
     submit = settings.momentum_submit_enabled and not args.no_submit
 
-    def _once() -> RunSummary:
-        return run_momentum_with_engine(
-            engine,
-            settings,
-            submit=submit,
-            as_of=_parse_as_of(args.as_of),
-            tickers=_parse_tickers(args.tickers),
-            adjustment_type=args.adjustment_type,
-            rule=args.rule,
-            dry_run=args.dry_run,
-        )
+    def _once() -> RunSummary | None:
+        with run_lock(redis_url=settings.quant_redis_url) as acquired:
+            if not acquired:
+                log.warning("Skipping run: another instance holds the run lock.")
+                return None
+            return run_momentum_with_engine(
+                engine,
+                settings,
+                submit=submit,
+                as_of=_parse_as_of(args.as_of),
+                tickers=_parse_tickers(args.tickers),
+                adjustment_type=args.adjustment_type,
+                rule=args.rule,
+                dry_run=args.dry_run,
+            )
 
     if args.schedule:
         log.info("Starting scheduled momentum runs every %d seconds.", args.schedule)
@@ -308,8 +313,31 @@ def run_command(args) -> int:
             return 0
 
     summary = _once()
+    if summary is None:
+        return 0
     if summary.status == "completed":
         return 0
     if summary.status == "skipped":
         return 2
     return 1
+
+
+def run_summary_command(args) -> int:
+    """CLI handler for ``run-summary`` — print the latest run (or recent runs)."""
+    import json
+
+    from quant_momentum.api.queries import RunListParams, get_latest_run, list_runs
+    from quant_momentum.db import get_engine
+
+    engine = get_engine()
+    if getattr(args, "latest", False):
+        run = get_latest_run(engine)
+        if run is None:
+            log.info("No runs found.")
+            return 0
+        print(json.dumps(run, indent=2, default=str))
+        return 0
+
+    result = list_runs(engine, RunListParams(limit=10))
+    print(json.dumps(result, indent=2, default=str))
+    return 0
