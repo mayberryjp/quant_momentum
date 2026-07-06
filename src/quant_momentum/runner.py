@@ -240,6 +240,67 @@ def _submit_flagged(
             log.exception("Failed to record submission audit for %s", ticker)
 
 
+@dataclass
+class BackfillSummary:
+    from_date: date
+    to_date: date
+    adjustment_type: str
+    dates_processed: int = 0
+    symbols_computed: int = 0
+    symbols_failed: int = 0
+    momentum_flagged: int = 0
+
+
+def backfill(
+    *,
+    reader,
+    store,
+    settings: Settings,
+    from_date: date,
+    to_date: date,
+    tickers: list[str] | None = None,
+    adjustment_type: str | None = None,
+    rule: str | None = None,
+) -> BackfillSummary:
+    """Compute momentum for every trading date in ``[from_date, to_date]``.
+
+    Historical / regime research only — never submits to the watchlist. Each
+    date is upserted idempotently, so re-running overwrites cleanly.
+    """
+    adjustment = adjustment_type or settings.momentum_adjustment_type
+    dates = reader.trading_dates(adjustment, from_date, to_date)
+    summary = BackfillSummary(from_date=from_date, to_date=to_date, adjustment_type=adjustment)
+
+    for as_of in dates:
+        result = run_momentum(
+            reader=reader,
+            store=store,
+            settings=settings,
+            as_of=as_of,
+            tickers=tickers,
+            adjustment_type=adjustment,
+            rule=rule,
+            submit=False,
+        )
+        if result.status == "completed":
+            summary.dates_processed += 1
+            summary.symbols_computed += result.symbols_computed
+            summary.symbols_failed += result.symbols_failed
+            summary.momentum_flagged += result.momentum_flagged
+
+    log.info(
+        "Backfill %s..%s (%s): dates=%d computed=%d failed=%d flagged=%d",
+        from_date,
+        to_date,
+        adjustment,
+        summary.dates_processed,
+        summary.symbols_computed,
+        summary.symbols_failed,
+        summary.momentum_flagged,
+    )
+    return summary
+
+
 def _parse_as_of(raw: str | None) -> date | None:
     if not raw:
         return None
@@ -340,4 +401,39 @@ def run_summary_command(args) -> int:
 
     result = list_runs(engine, RunListParams(limit=10))
     print(json.dumps(result, indent=2, default=str))
+    return 0
+
+
+def backfill_with_engine(engine, settings: Settings, **kwargs) -> BackfillSummary:
+    """Build the engine-backed reader/store and run a historical backfill."""
+    from quant_momentum.bars import BarsReader
+    from quant_momentum.persistence import MomentumStore
+
+    return backfill(
+        reader=BarsReader(engine),
+        store=MomentumStore(engine),
+        settings=settings,
+        **kwargs,
+    )
+
+
+def backfill_command(args) -> int:
+    """CLI handler for ``momentum backfill``."""
+    from quant_momentum.db import get_engine
+
+    from_date = _parse_as_of(args.from_date)
+    to_date = _parse_as_of(args.to_date)
+    if from_date is None or to_date is None or from_date > to_date:
+        log.error("backfill requires --from-date <= --to-date (YYYY-MM-DD)")
+        return 2
+
+    settings = get_settings()
+    backfill_with_engine(
+        get_engine(),
+        settings,
+        from_date=from_date,
+        to_date=to_date,
+        tickers=_parse_tickers(args.tickers),
+        adjustment_type=args.adjustment_type,
+    )
     return 0
