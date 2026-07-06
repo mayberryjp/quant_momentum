@@ -45,6 +45,7 @@ class FakeStore:
         self.created = None
         self.upserts = []
         self.finalized = None
+        self.submissions = []
         self._fail = set(fail_symbol_ids)
         self._next_id = 101
 
@@ -59,8 +60,23 @@ class FakeStore:
             raise RuntimeError("boom")
         self.upserts.append(row)
 
+    def record_submission(self, **kwargs):
+        self.submissions.append(kwargs)
+
     def finalize_run(self, run_id, **kwargs):
         self.finalized = (run_id, kwargs)
+
+
+class FakeSubmitter:
+    def __init__(self, status="accepted"):
+        self.calls = []
+        self._status = status
+
+    def submit(self, payload):
+        from quant_momentum.signals import SubmitOutcome
+
+        self.calls.append(payload)
+        return SubmitOutcome(self._status, "cache-1", 200, None)
 
 
 def _standard_fixture(fail_symbol_ids=()):
@@ -147,3 +163,44 @@ def test_parse_helpers() -> None:
     assert _parse_as_of("2026-07-06") == date(2026, 7, 6)
     assert _parse_tickers("aapl, msft ,tsla") == ["AAPL", "MSFT", "TSLA"]
     assert _parse_tickers(None) is None
+
+
+def test_submission_only_flagged_with_counters_and_audit() -> None:
+    reader, store = _standard_fixture()
+    submitter = FakeSubmitter("accepted")
+    summary = run_momentum(
+        reader=reader, store=store, settings=Settings(), submit=True, submitter=submitter
+    )
+    assert summary.momentum_flagged == 1
+    assert summary.signals_submitted == 1
+    assert summary.signals_accepted == 1
+    assert len(submitter.calls) == 1  # only the flagged ticker
+    assert submitter.calls[0]["ticker"] == "AAPL"
+    assert len(store.submissions) == 1
+    assert store.submissions[0]["status"] == "accepted"
+    assert store.finalized[1]["signals_accepted"] == 1
+
+
+def test_no_submission_when_disabled() -> None:
+    reader, store = _standard_fixture()
+    submitter = FakeSubmitter()
+    summary = run_momentum(
+        reader=reader, store=store, settings=Settings(), submit=False, submitter=submitter
+    )
+    assert summary.signals_submitted == 0
+    assert submitter.calls == []
+    assert store.submissions == []
+
+
+def test_no_submission_in_dry_run() -> None:
+    reader, store = _standard_fixture()
+    submitter = FakeSubmitter()
+    run_momentum(
+        reader=reader,
+        store=store,
+        settings=Settings(),
+        submit=True,
+        submitter=submitter,
+        dry_run=True,
+    )
+    assert submitter.calls == []

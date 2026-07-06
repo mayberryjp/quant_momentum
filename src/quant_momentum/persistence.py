@@ -111,6 +111,17 @@ _INSERT_RUN_SQL = text(
     """
 )
 
+_INSERT_SUBMISSION_SQL = text(
+    """
+    INSERT INTO momentum.signal_submissions
+        (run_id, symbol_id, ticker, bar_date, idempotency_key, source,
+         direction, score, status, signal_cache_id, http_status, error)
+    VALUES
+        (:run_id, :symbol_id, :ticker, :bar_date, :idempotency_key, :source,
+         :direction, :score, :status, :signal_cache_id, :http_status, :error)
+    """
+)
+
 _FINALIZE_RUN_SQL = text(
     """
     UPDATE momentum.momentum_runs
@@ -215,6 +226,41 @@ class MomentumStore:
     def upsert_daily_momentum(self, row: DailyMomentumRow) -> None:
         with self._engine.begin() as conn:
             conn.execute(_UPSERT_DAILY_MOMENTUM_SQL, asdict(row))
+
+    def record_submission(
+        self,
+        *,
+        run_id: int | None,
+        symbol_id: int | None,
+        ticker: str,
+        bar_date: date,
+        idempotency_key: str,
+        source: str,
+        direction: str | None,
+        score: float | Decimal | None,
+        status: str,
+        signal_cache_id: str | None,
+        http_status: int | None,
+        error: str | None,
+    ) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                _INSERT_SUBMISSION_SQL,
+                {
+                    "run_id": run_id,
+                    "symbol_id": symbol_id,
+                    "ticker": ticker,
+                    "bar_date": bar_date,
+                    "idempotency_key": idempotency_key,
+                    "source": source,
+                    "direction": direction,
+                    "score": score,
+                    "status": status,
+                    "signal_cache_id": signal_cache_id,
+                    "http_status": http_status,
+                    "error": error,
+                },
+            )
 
     def finalize_run(
         self,
