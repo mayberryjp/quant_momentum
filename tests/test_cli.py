@@ -44,6 +44,11 @@ def test_parse_backfill_requires_dates() -> None:
     assert args.to_date == "2026-02-01"
 
 
+def test_backfill_rejects_reversed_dates() -> None:
+    # from-date > to-date is rejected before touching the database.
+    assert main(["momentum", "backfill", "--from-date", "2026-07-10", "--to-date", "2026-07-01"]) == 2
+
+
 def test_dispatch_run_summary_dispatches(monkeypatch) -> None:
     import quant_momentum.runner as runner
 

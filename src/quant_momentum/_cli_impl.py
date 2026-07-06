@@ -66,11 +66,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _not_implemented(feature: str, slice_no: int) -> int:
-    log.warning("%s is not implemented yet (arriving in slice %d).", feature, slice_no)
-    return 0
-
-
 def _dispatch_db(command: str) -> int:
     from quant_momentum import db
 
@@ -92,7 +87,9 @@ def _dispatch(args: argparse.Namespace) -> int:
 
             return runner.run_command(args)
         if args.command == "backfill":
-            return _not_implemented("momentum backfill", 8)
+            from quant_momentum import runner
+
+            return runner.backfill_command(args)
     if args.group == "run-summary":
         from quant_momentum import runner
 
