@@ -11,6 +11,7 @@ from quant_momentum.bars import (
     latest_bar_date,
     read_trailing_closes,
     resolve_symbols,
+    trading_dates,
 )
 
 
@@ -23,6 +24,9 @@ class _FakeResult:
 
     def scalar(self):
         return self._rows
+
+    def scalars(self):
+        return list(self._rows)
 
 
 class _FakeConn:
@@ -116,3 +120,15 @@ def test_resolve_symbols_by_ticker_filter() -> None:
     sql, params = conn.calls[0]
     assert "canonical_ticker = any(:tickers)" in sql.lower()
     assert params == {"tickers": ["AAPL"]}
+
+
+def test_trading_dates_returns_ordered_range() -> None:
+    dates = [date(2026, 7, 1), date(2026, 7, 2), date(2026, 7, 6)]
+    conn = _FakeConn(dates)
+    result = trading_dates(conn, "unadjusted", date(2026, 7, 1), date(2026, 7, 6))
+    assert result == dates
+    assert conn.calls[0][1] == {
+        "adj": "unadjusted",
+        "from_date": date(2026, 7, 1),
+        "to_date": date(2026, 7, 6),
+    }

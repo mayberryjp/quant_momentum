@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from quant_momentum.bars import BarClose, SymbolCloses, SymbolRef
 from quant_momentum.config import Settings
-from quant_momentum.runner import _parse_as_of, _parse_tickers, run_momentum
+from quant_momentum.runner import _parse_as_of, _parse_tickers, backfill, run_momentum
 
 _AS_OF = date(2026, 7, 6)
 
@@ -21,10 +21,11 @@ def _closes(symbol_id: int, ticker: str, values: list[int | float]) -> SymbolClo
 
 
 class FakeReader:
-    def __init__(self, latest, symbols, closes_by_id):
+    def __init__(self, latest, symbols, closes_by_id, dates=None):
         self._latest = latest
         self._symbols = symbols
         self._closes = closes_by_id
+        self._dates = dates or []
         self.read_args = None
         self.tickers_arg = "unset"
 
@@ -34,6 +35,9 @@ class FakeReader:
     def resolve_symbols(self, tickers=None):
         self.tickers_arg = tickers
         return self._symbols
+
+    def trading_dates(self, adjustment_type, from_date, to_date):
+        return self._dates
 
     def read_trailing_closes(self, symbol_ids, as_of, adjustment_type, max_lookback=30):
         self.read_args = (list(symbol_ids), as_of, adjustment_type)
@@ -204,3 +208,20 @@ def test_no_submission_in_dry_run() -> None:
         dry_run=True,
     )
     assert submitter.calls == []
+
+
+def test_backfill_iterates_trading_dates_idempotently() -> None:
+    reader, store = _standard_fixture()
+    reader._dates = [date(2026, 7, 4), date(2026, 7, 5), date(2026, 7, 6)]
+    summary = backfill(
+        reader=reader,
+        store=store,
+        settings=Settings(),
+        from_date=date(2026, 7, 4),
+        to_date=date(2026, 7, 6),
+    )
+    assert summary.dates_processed == 3
+    assert summary.symbols_computed == 6  # 2 computable symbols x 3 dates
+    assert summary.momentum_flagged == 3  # AAPL flagged each date
+    assert len(store.upserts) == 6
+    assert store.submissions == []  # backfill never submits

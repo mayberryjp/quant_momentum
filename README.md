@@ -65,3 +65,39 @@ python3 -m quant_momentum.cli run-summary --latest
 docker build -t quant_momentum:latest .
 docker compose up
 ```
+
+## Operations & runbook
+
+Under `supervisord` the container runs three programs (see [supervisord.conf](supervisord.conf)):
+
+1. `db-migrate` (priority 10) — `alembic upgrade head`, runs once.
+2. `momentum-compute` (priority 20) — `momentum run --schedule $MOMENTUM_INTERVAL`.
+3. `quant-momentum-api` (priority 20) — the read API on `API_PORT` (8020).
+
+`docker compose up` brings up migrate → compute → API against the shared `quant`
+stack. The API `/health` endpoint backs the compose healthcheck; `/ready` reports
+DB connectivity, schema version, and the latest run.
+
+**Scheduling & the run lock.** Scheduled mode recomputes the as-of date each cycle.
+Set `QUANT_REDIS_URL` to enable an optional cross-instance run lock so overlapping
+runs are skipped; if unset, the lock is a no-op (single-instance default).
+
+**Local end-to-end smoke.**
+
+```bash
+python3 scripts/signals_stub.py &                       # fake quant_signals on :8016
+QUANT_SIGNALS_BASE_URL=http://localhost:8016 \
+  python3 -m quant_momentum.cli momentum run --as-of 2026-07-06
+python3 -m quant_momentum.cli run-summary --latest      # inspect the run
+```
+
+**Common tasks.**
+
+| Task | Command |
+|---|---|
+| Apply migrations | `python3 -m quant_momentum.cli db upgrade` |
+| Verify schema at head | `python3 -m quant_momentum.cli db verify` |
+| One-shot compute (no submit) | `python3 -m quant_momentum.cli momentum run --no-submit` |
+| Latest run summary | `python3 -m quant_momentum.cli run-summary --latest` |
+| Readiness probe | `curl localhost:8020/ready` |
+

@@ -13,13 +13,25 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://quant:quant_dev_password@postgres:5432/quant}
       QUANT_SIGNALS_BASE_URL: ${QUANT_SIGNALS_BASE_URL:-http://quant_signals:8016}
+      # Set QUANT_REDIS_URL to enable the optional cross-instance run lock.
       QUANT_REDIS_URL: ${QUANT_REDIS_URL:-}
       API_PORT: "8020"
       API_LISTEN_ADDRESS: "0.0.0.0"
       MOMENTUM_INTERVAL: "${MOMENTUM_INTERVAL:-86400}"
+      MOMENTUM_SUBMIT_ENABLED: "${MOMENTUM_SUBMIT_ENABLED:-true}"
     ports:
       - "8020:8020"
     restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8020/health').status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     networks:
       - quant
 

@@ -104,6 +104,24 @@ def latest_bar_date(conn: Connection, adjustment_type: str) -> date | None:
     return conn.execute(_LATEST_BAR_DATE_SQL, {"adj": adjustment_type}).scalar()
 
 
+_TRADING_DATES_SQL = text(
+    "SELECT DISTINCT bar_date FROM market_data.daily_bars "
+    "WHERE adjustment_type = :adj AND bar_date BETWEEN :from_date AND :to_date "
+    "ORDER BY bar_date"
+)
+
+
+def trading_dates(
+    conn: Connection, adjustment_type: str, from_date: date, to_date: date
+) -> list[date]:
+    """Distinct bar dates present in the range (the effective trading calendar)."""
+    rows = conn.execute(
+        _TRADING_DATES_SQL,
+        {"adj": adjustment_type, "from_date": from_date, "to_date": to_date},
+    ).scalars()
+    return list(rows)
+
+
 def build_trailing_closes(rows: Iterable[Mapping]) -> dict[int, SymbolCloses]:
     """Group ranked bar rows into per-symbol, most-recent-first closes.
 
@@ -167,6 +185,10 @@ class BarsReader:
     def resolve_symbols(self, tickers: Sequence[str] | None = None) -> list[SymbolRef]:
         with self._engine.connect() as conn:
             return resolve_symbols(conn, tickers)
+
+    def trading_dates(self, adjustment_type: str, from_date: date, to_date: date) -> list[date]:
+        with self._engine.connect() as conn:
+            return trading_dates(conn, adjustment_type, from_date, to_date)
 
     def read_trailing_closes(
         self,
