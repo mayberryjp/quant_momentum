@@ -71,9 +71,21 @@ def _not_implemented(feature: str, slice_no: int) -> int:
     return 0
 
 
+def _dispatch_db(command: str) -> int:
+    from quant_momentum import db
+
+    if command == "upgrade":
+        return db.upgrade()
+    if command == "verify":
+        return db.verify()
+    if command == "downgrade-base":
+        return db.downgrade_base()
+    return 2
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     if args.group == "db":
-        return _not_implemented(f"db {args.command}", 1)
+        return _dispatch_db(args.command)
     if args.group == "momentum":
         if args.command == "run":
             return _not_implemented("momentum run", 4)

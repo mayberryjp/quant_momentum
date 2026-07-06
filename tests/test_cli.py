@@ -44,6 +44,19 @@ def test_parse_backfill_requires_dates() -> None:
     assert args.to_date == "2026-02-01"
 
 
-def test_dispatch_stubs_return_zero() -> None:
-    assert main(["db", "upgrade"]) == 0
+def test_dispatch_run_summary_stub_returns_zero() -> None:
     assert main(["run-summary", "--latest"]) == 0
+
+
+def test_db_upgrade_dispatches_to_db_module(monkeypatch) -> None:
+    import quant_momentum.db as dbmod
+
+    calls: list[str] = []
+    monkeypatch.setattr(dbmod, "upgrade", lambda: calls.append("upgrade") or 0)
+    monkeypatch.setattr(dbmod, "verify", lambda: calls.append("verify") or 0)
+    monkeypatch.setattr(dbmod, "downgrade_base", lambda: calls.append("downgrade") or 0)
+
+    assert main(["db", "upgrade"]) == 0
+    assert main(["db", "verify"]) == 0
+    assert main(["db", "downgrade-base"]) == 0
+    assert calls == ["upgrade", "verify", "downgrade"]
