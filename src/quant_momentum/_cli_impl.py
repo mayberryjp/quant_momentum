@@ -88,7 +88,9 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _dispatch_db(args.command)
     if args.group == "momentum":
         if args.command == "run":
-            return _not_implemented("momentum run", 4)
+            from quant_momentum import runner
+
+            return runner.run_command(args)
         if args.command == "backfill":
             return _not_implemented("momentum backfill", 8)
     if args.group == "run-summary":

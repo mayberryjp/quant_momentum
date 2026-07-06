@@ -15,7 +15,7 @@ from decimal import Decimal
 
 from sqlalchemy import Integer, Text, bindparam, text
 from sqlalchemy.dialects.postgresql import ARRAY
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Connection, Engine
 
 # Longest lookback we need history for; also covers the rolling 30-day stats,
 # which require 31 closes (30 consecutive daily changes).
@@ -152,3 +152,28 @@ def read_trailing_closes(
         },
     ).mappings()
     return build_trailing_closes(rows)
+
+
+class BarsReader:
+    """Engine-backed facade over the reader functions (one connection per call)."""
+
+    def __init__(self, engine: Engine):
+        self._engine = engine
+
+    def latest_bar_date(self, adjustment_type: str) -> date | None:
+        with self._engine.connect() as conn:
+            return latest_bar_date(conn, adjustment_type)
+
+    def resolve_symbols(self, tickers: Sequence[str] | None = None) -> list[SymbolRef]:
+        with self._engine.connect() as conn:
+            return resolve_symbols(conn, tickers)
+
+    def read_trailing_closes(
+        self,
+        symbol_ids: Sequence[int],
+        as_of: date,
+        adjustment_type: str,
+        max_lookback: int = DEFAULT_MAX_LOOKBACK,
+    ) -> dict[int, SymbolCloses]:
+        with self._engine.connect() as conn:
+            return read_trailing_closes(conn, symbol_ids, as_of, adjustment_type, max_lookback)

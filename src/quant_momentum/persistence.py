@@ -1,0 +1,256 @@
+"""Persistence for the ``momentum`` schema: run tracking + idempotent upserts.
+
+``DailyMomentumRow.from_result`` maps a pure :class:`MomentumResult` onto the
+``daily_momentum`` columns (pure, unit-testable). :class:`MomentumStore` is
+engine-backed and runs each write in its own short transaction so a single
+symbol's failure is isolated (spec §7 per-symbol error isolation).
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from datetime import date, datetime
+from decimal import Decimal
+
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
+
+from quant_momentum.momentum import MomentumResult
+
+
+@dataclass(frozen=True)
+class DailyMomentumRow:
+    symbol_id: int
+    ticker: str
+    bar_date: date
+    adjustment_type: str
+    close: Decimal
+    close_5d_ago: Decimal | None
+    close_15d_ago: Decimal | None
+    close_30d_ago: Decimal | None
+    momentum_5d: Decimal | None
+    momentum_15d: Decimal | None
+    momentum_30d: Decimal | None
+    is_momentum_5d: bool
+    is_momentum_15d: bool
+    is_momentum_30d: bool
+    is_momentum: bool
+    momentum_rule: str
+    threshold_5d: Decimal
+    threshold_15d: Decimal
+    threshold_30d: Decimal
+    avg_daily_change_30d: Decimal | None
+    median_daily_change_30d: Decimal | None
+    min_daily_change_30d: Decimal | None
+    max_daily_change_30d: Decimal | None
+    floor_price_30d: Decimal | None
+    ceiling_price_30d: Decimal | None
+    bars_available: int
+    run_id: int | None
+    computed_at: datetime
+
+    @classmethod
+    def from_result(
+        cls,
+        result: MomentumResult,
+        *,
+        symbol_id: int,
+        ticker: str,
+        bar_date: date,
+        adjustment_type: str,
+        run_id: int | None,
+        computed_at: datetime,
+    ) -> "DailyMomentumRow":
+        stats = result.stats
+
+        def threshold(lookback: int) -> Decimal:
+            interval = result.intervals.get(lookback)
+            return interval.threshold if interval else Decimal("0")
+
+        return cls(
+            symbol_id=symbol_id,
+            ticker=ticker,
+            bar_date=bar_date,
+            adjustment_type=adjustment_type,
+            close=result.close,
+            close_5d_ago=result.reference_close(5),
+            close_15d_ago=result.reference_close(15),
+            close_30d_ago=result.reference_close(30),
+            momentum_5d=result.momentum(5),
+            momentum_15d=result.momentum(15),
+            momentum_30d=result.momentum(30),
+            is_momentum_5d=result.flag(5),
+            is_momentum_15d=result.flag(15),
+            is_momentum_30d=result.flag(30),
+            is_momentum=result.is_momentum,
+            momentum_rule=result.momentum_rule,
+            threshold_5d=threshold(5),
+            threshold_15d=threshold(15),
+            threshold_30d=threshold(30),
+            avg_daily_change_30d=stats.avg_daily_change,
+            median_daily_change_30d=stats.median_daily_change,
+            min_daily_change_30d=stats.min_daily_change,
+            max_daily_change_30d=stats.max_daily_change,
+            floor_price_30d=stats.floor_price,
+            ceiling_price_30d=stats.ceiling_price,
+            bars_available=result.bars_available,
+            run_id=run_id,
+            computed_at=computed_at,
+        )
+
+
+_INSERT_RUN_SQL = text(
+    """
+    INSERT INTO momentum.momentum_runs
+        (run_date, as_of_bar_date, adjustment_type, momentum_rule,
+         threshold_5d, threshold_15d, threshold_30d, status, started_at)
+    VALUES
+        (:run_date, :as_of_bar_date, :adjustment_type, :momentum_rule,
+         :threshold_5d, :threshold_15d, :threshold_30d, 'running', now())
+    RETURNING id
+    """
+)
+
+_FINALIZE_RUN_SQL = text(
+    """
+    UPDATE momentum.momentum_runs
+       SET status = :status,
+           symbols_requested = :symbols_requested,
+           symbols_computed = :symbols_computed,
+           symbols_skipped = :symbols_skipped,
+           symbols_failed = :symbols_failed,
+           momentum_flagged = :momentum_flagged,
+           signals_submitted = :signals_submitted,
+           signals_accepted = :signals_accepted,
+           signals_duplicate = :signals_duplicate,
+           signals_unresolved = :signals_unresolved,
+           signals_failed = :signals_failed,
+           error_message = :error_message,
+           duration_seconds = :duration_seconds,
+           finished_at = now()
+     WHERE id = :run_id
+    """
+)
+
+_UPSERT_DAILY_MOMENTUM_SQL = text(
+    """
+    INSERT INTO momentum.daily_momentum
+        (symbol_id, ticker, bar_date, adjustment_type, close,
+         close_5d_ago, close_15d_ago, close_30d_ago,
+         momentum_5d, momentum_15d, momentum_30d,
+         is_momentum_5d, is_momentum_15d, is_momentum_30d, is_momentum,
+         momentum_rule, threshold_5d, threshold_15d, threshold_30d,
+         avg_daily_change_30d, median_daily_change_30d,
+         min_daily_change_30d, max_daily_change_30d,
+         floor_price_30d, ceiling_price_30d,
+         bars_available, run_id, computed_at)
+    VALUES
+        (:symbol_id, :ticker, :bar_date, :adjustment_type, :close,
+         :close_5d_ago, :close_15d_ago, :close_30d_ago,
+         :momentum_5d, :momentum_15d, :momentum_30d,
+         :is_momentum_5d, :is_momentum_15d, :is_momentum_30d, :is_momentum,
+         :momentum_rule, :threshold_5d, :threshold_15d, :threshold_30d,
+         :avg_daily_change_30d, :median_daily_change_30d,
+         :min_daily_change_30d, :max_daily_change_30d,
+         :floor_price_30d, :ceiling_price_30d,
+         :bars_available, :run_id, :computed_at)
+    ON CONFLICT (symbol_id, bar_date, adjustment_type) DO UPDATE SET
+         ticker = EXCLUDED.ticker,
+         close = EXCLUDED.close,
+         close_5d_ago = EXCLUDED.close_5d_ago,
+         close_15d_ago = EXCLUDED.close_15d_ago,
+         close_30d_ago = EXCLUDED.close_30d_ago,
+         momentum_5d = EXCLUDED.momentum_5d,
+         momentum_15d = EXCLUDED.momentum_15d,
+         momentum_30d = EXCLUDED.momentum_30d,
+         is_momentum_5d = EXCLUDED.is_momentum_5d,
+         is_momentum_15d = EXCLUDED.is_momentum_15d,
+         is_momentum_30d = EXCLUDED.is_momentum_30d,
+         is_momentum = EXCLUDED.is_momentum,
+         momentum_rule = EXCLUDED.momentum_rule,
+         threshold_5d = EXCLUDED.threshold_5d,
+         threshold_15d = EXCLUDED.threshold_15d,
+         threshold_30d = EXCLUDED.threshold_30d,
+         avg_daily_change_30d = EXCLUDED.avg_daily_change_30d,
+         median_daily_change_30d = EXCLUDED.median_daily_change_30d,
+         min_daily_change_30d = EXCLUDED.min_daily_change_30d,
+         max_daily_change_30d = EXCLUDED.max_daily_change_30d,
+         floor_price_30d = EXCLUDED.floor_price_30d,
+         ceiling_price_30d = EXCLUDED.ceiling_price_30d,
+         bars_available = EXCLUDED.bars_available,
+         run_id = EXCLUDED.run_id,
+         computed_at = EXCLUDED.computed_at,
+         updated_at = now()
+    """
+)
+
+
+class MomentumStore:
+    """Engine-backed writer for the ``momentum`` schema."""
+
+    def __init__(self, engine: Engine):
+        self._engine = engine
+
+    def create_run(
+        self,
+        *,
+        run_date: date,
+        as_of_bar_date: date,
+        adjustment_type: str,
+        momentum_rule: str,
+        thresholds: dict[int, float | Decimal],
+    ) -> int:
+        params = {
+            "run_date": run_date,
+            "as_of_bar_date": as_of_bar_date,
+            "adjustment_type": adjustment_type,
+            "momentum_rule": momentum_rule,
+            "threshold_5d": thresholds.get(5, 0),
+            "threshold_15d": thresholds.get(15, 0),
+            "threshold_30d": thresholds.get(30, 0),
+        }
+        with self._engine.begin() as conn:
+            return int(conn.execute(_INSERT_RUN_SQL, params).scalar_one())
+
+    def upsert_daily_momentum(self, row: DailyMomentumRow) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(_UPSERT_DAILY_MOMENTUM_SQL, asdict(row))
+
+    def finalize_run(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        symbols_requested: int = 0,
+        symbols_computed: int = 0,
+        symbols_skipped: int = 0,
+        symbols_failed: int = 0,
+        momentum_flagged: int = 0,
+        signals_submitted: int = 0,
+        signals_accepted: int = 0,
+        signals_duplicate: int = 0,
+        signals_unresolved: int = 0,
+        signals_failed: int = 0,
+        error_message: str | None = None,
+        duration_seconds: float | None = None,
+    ) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(
+                _FINALIZE_RUN_SQL,
+                {
+                    "run_id": run_id,
+                    "status": status,
+                    "symbols_requested": symbols_requested,
+                    "symbols_computed": symbols_computed,
+                    "symbols_skipped": symbols_skipped,
+                    "symbols_failed": symbols_failed,
+                    "momentum_flagged": momentum_flagged,
+                    "signals_submitted": signals_submitted,
+                    "signals_accepted": signals_accepted,
+                    "signals_duplicate": signals_duplicate,
+                    "signals_unresolved": signals_unresolved,
+                    "signals_failed": signals_failed,
+                    "error_message": error_message,
+                    "duration_seconds": duration_seconds,
+                },
+            )
