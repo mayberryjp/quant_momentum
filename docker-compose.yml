@@ -1,15 +1,6 @@
-# docker-compose for quant_momentum.
-#
-# Connects to the shared `quant` stack (Postgres, quant_signals, optional Redis)
-# via an external Docker network. Adjust the network name below to match your
-# environment (the network is finalized in slice 7).
 services:
   quant_momentum:
-    build:
-      context: .
-      args:
-        CACHE_BUST: "1"
-    image: quant_momentum:latest
+    image: mayberry4477/quant_momentum:latest
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://quant:quant_dev_password@postgres:5432/quant}
       QUANT_SIGNALS_BASE_URL: ${QUANT_SIGNALS_BASE_URL:-http://quant_signals:8016}
@@ -22,20 +13,3 @@ services:
     ports:
       - "8020:8020"
     restart: unless-stopped
-    healthcheck:
-      test:
-        - CMD
-        - python3
-        - -c
-        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8020/health').status==200 else 1)"
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-    networks:
-      - quant
-
-networks:
-  quant:
-    external: true
-    name: quant_default
