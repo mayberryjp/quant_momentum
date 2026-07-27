@@ -27,6 +27,7 @@ class FakeReader:
         self._closes = closes_by_id
         self._dates = dates or []
         self.read_args = None
+        self.snapshot_args = None
         self.tickers_arg = "unset"
 
     def latest_bar_date(self, adjustment_type):
@@ -43,13 +44,36 @@ class FakeReader:
         self.read_args = (list(symbol_ids), as_of, adjustment_type)
         return self._closes
 
+    def read_daily_snapshots(self, symbol_ids, as_of, adjustment_type):
+        self.snapshot_args = (list(symbol_ids), as_of, adjustment_type)
+        snapshots = {}
+        for sid in symbol_ids:
+            closes = self._closes.get(sid)
+            if not closes:
+                continue
+            snapshots[sid] = type(
+                "Snapshot",
+                (),
+                {
+                    "symbol_id": sid,
+                    "ticker": closes.ticker,
+                    "bar_date": as_of,
+                    "close": closes.closes[0].close,
+                    "high": closes.closes[0].close + Decimal("1"),
+                    "low": closes.closes[0].close - Decimal("1"),
+                },
+            )()
+        return snapshots
+
 
 class FakeStore:
     def __init__(self, fail_symbol_ids=()):
         self.created = None
         self.upserts = []
+        self.price_change_upserts = []
         self.finalized = None
         self.submissions = []
+        self.pruned_cutoff = None
         self._fail = set(fail_symbol_ids)
         self._next_id = 101
 
@@ -63,6 +87,12 @@ class FakeStore:
         if row.symbol_id in self._fail:
             raise RuntimeError("boom")
         self.upserts.append(row)
+
+    def upsert_daily_price_change(self, row):
+        self.price_change_upserts.append(row)
+
+    def prune_daily_price_changes(self, cutoff_date):
+        self.pruned_cutoff = cutoff_date
 
     def record_submission(self, **kwargs):
         self.submissions.append(kwargs)
@@ -107,6 +137,7 @@ def test_run_populates_and_finalizes() -> None:
     assert summary.momentum_flagged == 1
     assert store.created is not None
     assert len(store.upserts) == 2
+    assert len(store.price_change_upserts) == 3
     assert store.finalized[0] == summary.run_id
     assert store.finalized[1]["status"] == "completed"
     assert store.finalized[1]["momentum_flagged"] == 1
@@ -151,6 +182,7 @@ def test_dry_run_does_not_write() -> None:
     assert summary.run_id is None
     assert store.created is None
     assert store.upserts == []
+    assert store.price_change_upserts == []
     assert store.finalized is None
 
 
@@ -160,6 +192,12 @@ def test_no_bars_at_all_skips() -> None:
     summary = run_momentum(reader=reader, store=store, settings=Settings())
     assert summary.status == "skipped"
     assert summary.as_of is None
+
+
+def test_retention_prune_runs_after_completed_run() -> None:
+    reader, store = _standard_fixture()
+    run_momentum(reader=reader, store=store, settings=Settings())
+    assert store.pruned_cutoff == date(2026, 4, 8)
 
 
 def test_parse_helpers() -> None:

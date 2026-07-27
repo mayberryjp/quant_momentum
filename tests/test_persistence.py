@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from quant_momentum.momentum import compute_momentum
 from quant_momentum.persistence import (
+    _UPSERT_DAILY_PRICE_CHANGE_SQL,
     _UPSERT_DAILY_MOMENTUM_SQL,
     DailyMomentumRow,
 )
@@ -78,5 +79,11 @@ def test_from_result_insufficient_history_nulls() -> None:
 
 def test_upsert_sql_is_idempotent() -> None:
     sql = str(_UPSERT_DAILY_MOMENTUM_SQL).lower()
+    assert "on conflict (symbol_id, bar_date, adjustment_type) do update" in sql
+    assert "updated_at = now()" in sql
+
+
+def test_daily_price_change_upsert_sql_is_idempotent() -> None:
+    sql = str(_UPSERT_DAILY_PRICE_CHANGE_SQL).lower()
     assert "on conflict (symbol_id, bar_date, adjustment_type) do update" in sql
     assert "updated_at = now()" in sql

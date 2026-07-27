@@ -99,6 +99,24 @@ class DailyMomentumRow:
         )
 
 
+@dataclass(frozen=True)
+class DailyPriceChangeRow:
+    symbol_id: int
+    ticker: str
+    bar_date: date
+    adjustment_type: str
+    close: Decimal
+    prev_close: Decimal
+    close_change_amount: Decimal
+    close_change_percent: Decimal | None
+    high: Decimal
+    low: Decimal
+    intraday_change_amount: Decimal
+    intraday_change_percent: Decimal | None
+    run_id: int | None
+    computed_at: datetime
+
+
 _INSERT_RUN_SQL = text(
     """
     INSERT INTO momentum.momentum_runs
@@ -141,6 +159,38 @@ _FINALIZE_RUN_SQL = text(
            finished_at = now()
      WHERE id = :run_id
     """
+)
+
+_UPSERT_DAILY_PRICE_CHANGE_SQL = text(
+    """
+    INSERT INTO momentum.daily_price_changes
+        (symbol_id, ticker, bar_date, adjustment_type,
+         close, prev_close, close_change_amount, close_change_percent,
+         high, low, intraday_change_amount, intraday_change_percent,
+         run_id, computed_at)
+    VALUES
+        (:symbol_id, :ticker, :bar_date, :adjustment_type,
+         :close, :prev_close, :close_change_amount, :close_change_percent,
+         :high, :low, :intraday_change_amount, :intraday_change_percent,
+         :run_id, :computed_at)
+    ON CONFLICT (symbol_id, bar_date, adjustment_type) DO UPDATE SET
+         ticker = EXCLUDED.ticker,
+         close = EXCLUDED.close,
+         prev_close = EXCLUDED.prev_close,
+         close_change_amount = EXCLUDED.close_change_amount,
+         close_change_percent = EXCLUDED.close_change_percent,
+         high = EXCLUDED.high,
+         low = EXCLUDED.low,
+         intraday_change_amount = EXCLUDED.intraday_change_amount,
+         intraday_change_percent = EXCLUDED.intraday_change_percent,
+         run_id = EXCLUDED.run_id,
+         computed_at = EXCLUDED.computed_at,
+         updated_at = now()
+    """
+)
+
+_PRUNE_DAILY_PRICE_CHANGES_SQL = text(
+    "DELETE FROM momentum.daily_price_changes WHERE bar_date < :cutoff_date"
 )
 
 _UPSERT_DAILY_MOMENTUM_SQL = text(
@@ -226,6 +276,14 @@ class MomentumStore:
     def upsert_daily_momentum(self, row: DailyMomentumRow) -> None:
         with self._engine.begin() as conn:
             conn.execute(_UPSERT_DAILY_MOMENTUM_SQL, asdict(row))
+
+    def upsert_daily_price_change(self, row: DailyPriceChangeRow) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(_UPSERT_DAILY_PRICE_CHANGE_SQL, asdict(row))
+
+    def prune_daily_price_changes(self, cutoff_date: date) -> None:
+        with self._engine.begin() as conn:
+            conn.execute(_PRUNE_DAILY_PRICE_CHANGES_SQL, {"cutoff_date": cutoff_date})
 
     def record_submission(
         self,

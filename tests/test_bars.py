@@ -6,9 +6,11 @@ from datetime import date
 from decimal import Decimal
 
 from quant_momentum.bars import (
+    DailyBarSnapshot,
     SymbolRef,
     build_trailing_closes,
     latest_bar_date,
+    read_daily_snapshots,
     read_trailing_closes,
     resolve_symbols,
     trading_dates,
@@ -95,6 +97,40 @@ def test_read_trailing_closes_passes_expected_params() -> None:
 def test_read_trailing_closes_short_circuits_on_empty_ids() -> None:
     conn = _FakeConn([])
     assert read_trailing_closes(conn, [], date(2026, 7, 6), "unadjusted") == {}
+    assert conn.calls == []
+
+
+def test_read_daily_snapshots_returns_symbol_map() -> None:
+    rows = [
+        {
+            "symbol_id": 1,
+            "ticker": "AAPL",
+            "bar_date": date(2026, 7, 6),
+            "close": Decimal("12"),
+            "high": Decimal("13"),
+            "low": Decimal("11"),
+        }
+    ]
+    conn = _FakeConn(rows)
+    result = read_daily_snapshots(conn, [1], date(2026, 7, 6), "unadjusted")
+    assert result[1] == DailyBarSnapshot(
+        symbol_id=1,
+        ticker="AAPL",
+        bar_date=date(2026, 7, 6),
+        close=Decimal("12"),
+        high=Decimal("13"),
+        low=Decimal("11"),
+    )
+    assert conn.calls[0][1] == {
+        "adj": "unadjusted",
+        "as_of": date(2026, 7, 6),
+        "symbol_ids": [1],
+    }
+
+
+def test_read_daily_snapshots_short_circuits_on_empty_ids() -> None:
+    conn = _FakeConn([])
+    assert read_daily_snapshots(conn, [], date(2026, 7, 6), "unadjusted") == {}
     assert conn.calls == []
 
 

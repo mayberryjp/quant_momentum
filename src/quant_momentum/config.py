@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     momentum_rule: str = Field(default="ALL", alias="MOMENTUM_RULE")
     momentum_min_history: int = Field(default=31, alias="MOMENTUM_MIN_HISTORY")
     momentum_direction_mode: str = Field(default="long_only", alias="MOMENTUM_DIRECTION_MODE")
+    daily_change_retention_days: int = Field(default=90, alias="DAILY_CHANGE_RETENTION_DAYS")
 
     # -- Watchlist submission -----------------------------------------
     momentum_submit_enabled: bool = Field(default=True, alias="MOMENTUM_SUBMIT_ENABLED")
@@ -84,6 +85,13 @@ class Settings(BaseSettings):
     def _validate_direction_mode(cls, value: str) -> str:
         if value not in DIRECTION_MODES:
             raise ValueError(f"MOMENTUM_DIRECTION_MODE must be one of {DIRECTION_MODES}")
+        return value
+
+    @field_validator("daily_change_retention_days")
+    @classmethod
+    def _validate_retention_days(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("DAILY_CHANGE_RETENTION_DAYS must be >= 1")
         return value
 
     @property

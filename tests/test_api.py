@@ -30,6 +30,16 @@ def _client(**overrides) -> TestApp:
         ),
         momentum_latest=lambda flag: {"status": "ok", "flag": flag, "results": []},
         momentum_date_range=lambda: {"status": "ok", "min_bar_date": "2026-01-01"},
+        daily_changes_list=lambda p: {
+            "status": "ok",
+            "count": 1,
+            "results": [{"ticker": "AAPL", "close_change_percent": 1.0}],
+            "echo": {
+                "ticker": p.ticker,
+                "adjustment_type": p.adjustment_type,
+                "limit": p.limit,
+            },
+        },
         runs_list=lambda p: {"status": "ok", "count": 0, "results": [], "echo": {"status": p.status}},
         run_detail=lambda rid: {"id": rid, "status": "completed"} if rid == 1 else None,
         runs_latest=lambda: {"id": 9, "status": "completed"},
@@ -102,6 +112,30 @@ def test_momentum_latest_default_and_flag() -> None:
 def test_momentum_date_range_200_and_404() -> None:
     assert _client().get("/momentum/date-range").status_code == 200
     _client(momentum_date_range=lambda: None).get("/momentum/date-range", status=404)
+
+
+def test_daily_changes_list_and_filter_echo() -> None:
+    resp = _client().get("/daily-changes?ticker=aapl&adjustment_type=unadjusted&limit=50")
+    assert resp.status_code == 200
+    echo = resp.json["echo"]
+    assert echo["ticker"] == "aapl"
+    assert echo["adjustment_type"] == "unadjusted"
+    assert echo["limit"] == 50
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "limit=0",
+        "limit=999",
+        "offset=-1",
+        "adjustment_type=weird",
+        "from_date=2026-13",
+        "symbol_id=abc",
+    ],
+)
+def test_daily_changes_validation_422(query: str) -> None:
+    _client().get(f"/daily-changes?{query}", status=422)
 
 
 def test_runs_list_and_invalid_status_422() -> None:

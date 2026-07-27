@@ -16,6 +16,7 @@ from typing import Any
 from bottle import Bottle, request, response
 
 from quant_momentum.api.queries import (
+    DailyChangeListParams,
     VALID_ADJUSTMENT_TYPES,
     VALID_RUN_STATUSES,
     MomentumListParams,
@@ -126,6 +127,7 @@ def _default_handlers() -> dict[str, Callable]:
         "momentum_by_ticker": lambda t, limit: queries.get_momentum_by_ticker(engine(), t, limit),
         "momentum_latest": lambda flag: queries.get_latest_momentum(engine(), flag),
         "momentum_date_range": lambda: queries.get_momentum_date_range(engine()),
+        "daily_changes_list": lambda p: queries.list_daily_changes(engine(), p),
         "runs_list": lambda p: queries.list_runs(engine(), p),
         "run_detail": lambda rid: queries.get_run(engine(), rid),
         "runs_latest": lambda: queries.get_latest_run(engine()),
@@ -143,6 +145,7 @@ def create_app(**overrides: Callable) -> Bottle:
     momentum_by_ticker = handlers["momentum_by_ticker"]
     momentum_latest = handlers["momentum_latest"]
     momentum_date_range = handlers["momentum_date_range"]
+    daily_changes_list = handlers["daily_changes_list"]
     runs_list = handlers["runs_list"]
     run_detail = handlers["run_detail"]
     runs_latest = handlers["runs_latest"]
@@ -224,6 +227,26 @@ def create_app(**overrides: Callable) -> Bottle:
         if result is None:
             return _not_found("no momentum rows")
         return result
+
+    @api.get("/daily-changes")
+    def daily_changes_route() -> dict:
+        try:
+            symbol_id_raw = request.query.get("symbol_id")
+            params = DailyChangeListParams(
+                ticker=request.query.get("ticker") or None,
+                symbol_id=_int_param(symbol_id_raw, default=None) if symbol_id_raw else None,
+                from_date=_date_param(request.query.get("from_date")),
+                to_date=_date_param(request.query.get("to_date")),
+                adjustment_type=_adjustment_param(request.query.get("adjustment_type")),
+                limit=_int_param(request.query.get("limit"), default=100, ge=1, le=500),
+                offset=_int_param(request.query.get("offset"), default=0, ge=0),
+            )
+        except _ValidationError as exc:
+            return _validation_error_response(str(exc))
+        try:
+            return daily_changes_list(params)
+        except Exception as exc:
+            return _server_error(exc)
 
     # -- runs ---------------------------------------------------------------
     @api.get("/runs")

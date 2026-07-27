@@ -50,6 +50,17 @@ class RunListParams:
     offset: int = 0
 
 
+@dataclass(frozen=True)
+class DailyChangeListParams:
+    ticker: str | None = None
+    symbol_id: int | None = None
+    from_date: str | None = None
+    to_date: str | None = None
+    adjustment_type: str | None = None
+    limit: int = 100
+    offset: int = 0
+
+
 def list_momentum(engine: Engine, params: MomentumListParams) -> dict[str, Any]:
     clauses: list[str] = []
     values: dict[str, Any] = {}
@@ -126,6 +137,44 @@ def get_momentum_date_range(engine: Engine) -> dict[str, Any] | None:
     if row is None or row["min_bar_date"] is None:
         return None
     return {"status": "ok", **_row(row)}
+
+
+def list_daily_changes(engine: Engine, params: DailyChangeListParams) -> dict[str, Any]:
+    clauses: list[str] = []
+    values: dict[str, Any] = {}
+    if params.ticker:
+        clauses.append("ticker = :ticker")
+        values["ticker"] = params.ticker.upper()
+    if params.symbol_id is not None:
+        clauses.append("symbol_id = :symbol_id")
+        values["symbol_id"] = params.symbol_id
+    if params.from_date:
+        clauses.append("bar_date >= :from_date")
+        values["from_date"] = params.from_date
+    if params.to_date:
+        clauses.append("bar_date <= :to_date")
+        values["to_date"] = params.to_date
+    if params.adjustment_type:
+        clauses.append("adjustment_type = :adjustment_type")
+        values["adjustment_type"] = params.adjustment_type
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    values["limit"] = params.limit
+    values["offset"] = params.offset
+    sql = text(
+        f"""
+        SELECT symbol_id, ticker, bar_date,
+               close_change_amount, close_change_percent,
+               intraday_change_amount, intraday_change_percent
+        FROM momentum.daily_price_changes
+        {where}
+        ORDER BY bar_date DESC, ticker ASC
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    with engine.connect() as conn:
+        rows = [_row(m) for m in conn.execute(sql, values).mappings()]
+    return {"status": "ok", "count": len(rows), "results": rows}
 
 
 def list_runs(engine: Engine, params: RunListParams) -> dict[str, Any]:

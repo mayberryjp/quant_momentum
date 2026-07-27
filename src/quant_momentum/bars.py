@@ -55,6 +55,18 @@ class SymbolCloses:
         return len(self.closes)
 
 
+@dataclass(frozen=True)
+class DailyBarSnapshot:
+    """Single-day OHLC snapshot for one symbol."""
+
+    symbol_id: int
+    ticker: str
+    bar_date: date
+    close: Decimal
+    high: Decimal
+    low: Decimal
+
+
 _RESOLVE_ACTIVE_SQL = text(
     "SELECT id, canonical_ticker FROM symbol_master.symbols "
     "WHERE active = true ORDER BY id"
@@ -83,6 +95,17 @@ _TRAILING_CLOSES_SQL = text(
     WHERE rn <= :max_rows
     ORDER BY symbol_id, rn
     """
+).bindparams(bindparam("symbol_ids", type_=ARRAY(Integer)))
+
+_DAILY_SNAPSHOT_SQL = text(
+        """
+        SELECT symbol_id, ticker, bar_date, close, high, low
+        FROM market_data.daily_bars
+        WHERE adjustment_type = :adj
+            AND bar_date = :as_of
+            AND symbol_id = ANY(:symbol_ids)
+        ORDER BY symbol_id
+        """
 ).bindparams(bindparam("symbol_ids", type_=ARRAY(Integer)))
 
 
@@ -172,6 +195,38 @@ def read_trailing_closes(
     return build_trailing_closes(rows)
 
 
+def read_daily_snapshots(
+    conn: Connection,
+    symbol_ids: Sequence[int],
+    as_of: date,
+    adjustment_type: str,
+) -> dict[int, DailyBarSnapshot]:
+    """Bulk-read one-day OHLC snapshots for ``symbol_ids`` on ``as_of``."""
+    if not symbol_ids:
+        return {}
+
+    rows = conn.execute(
+        _DAILY_SNAPSHOT_SQL,
+        {
+            "adj": adjustment_type,
+            "as_of": as_of,
+            "symbol_ids": list(symbol_ids),
+        },
+    ).mappings()
+
+    snapshots: dict[int, DailyBarSnapshot] = {}
+    for row in rows:
+        snapshots[row["symbol_id"]] = DailyBarSnapshot(
+            symbol_id=row["symbol_id"],
+            ticker=row["ticker"],
+            bar_date=row["bar_date"],
+            close=Decimal(str(row["close"])),
+            high=Decimal(str(row["high"])),
+            low=Decimal(str(row["low"])),
+        )
+    return snapshots
+
+
 class BarsReader:
     """Engine-backed facade over the reader functions (one connection per call)."""
 
@@ -199,3 +254,12 @@ class BarsReader:
     ) -> dict[int, SymbolCloses]:
         with self._engine.connect() as conn:
             return read_trailing_closes(conn, symbol_ids, as_of, adjustment_type, max_lookback)
+
+    def read_daily_snapshots(
+        self,
+        symbol_ids: Sequence[int],
+        as_of: date,
+        adjustment_type: str,
+    ) -> dict[int, DailyBarSnapshot]:
+        with self._engine.connect() as conn:
+            return read_daily_snapshots(conn, symbol_ids, as_of, adjustment_type)

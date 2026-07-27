@@ -23,11 +23,11 @@ def _render_sql(target: str) -> str:
     return buffer.getvalue().lower()
 
 
-def test_single_head_revision_0001() -> None:
+def test_single_head_revision_0002() -> None:
     script = ScriptDirectory.from_config(make_alembic_config())
-    assert script.get_heads() == ["0001"]
-    base = script.get_revision("0001")
-    assert base.down_revision is None
+    assert script.get_heads() == ["0002"]
+    rev = script.get_revision("0002")
+    assert rev.down_revision == "0001"
 
 
 def test_upgrade_creates_schema_tables_and_indexes() -> None:
@@ -35,6 +35,7 @@ def test_upgrade_creates_schema_tables_and_indexes() -> None:
     assert "create schema if not exists momentum" in sql
     assert "create table momentum.momentum_runs" in sql
     assert "create table momentum.daily_momentum" in sql
+    assert "create table momentum.daily_price_changes" in sql
     assert "create table momentum.signal_submissions" in sql
     assert "unique (symbol_id, bar_date, adjustment_type)" in sql
     for index in (
@@ -42,6 +43,8 @@ def test_upgrade_creates_schema_tables_and_indexes() -> None:
         "ix_daily_momentum_bar_date",
         "ix_daily_momentum_bar_date_is_momentum",
         "ix_daily_momentum_is_momentum_bar_date",
+        "ix_daily_price_changes_ticker_bar_date",
+        "ix_daily_price_changes_bar_date",
         "ix_signal_submissions_run_id",
         "ix_signal_submissions_ticker_bar_date",
     ):
@@ -62,7 +65,8 @@ def test_upgrade_includes_rolling_30d_stat_columns() -> None:
 
 
 def test_downgrade_only_touches_momentum_schema() -> None:
-    sql = _render_sql("0001:base")
+    sql = _render_sql("0002:base")
+    assert "drop table if exists momentum.daily_price_changes" in sql
     assert "drop table if exists momentum.daily_momentum" in sql
     assert "drop table if exists momentum.momentum_runs" in sql
     assert "drop table if exists momentum.signal_submissions" in sql

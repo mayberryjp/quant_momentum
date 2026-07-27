@@ -11,12 +11,13 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 from quant_momentum.config import Settings, get_settings
 from quant_momentum.lock import run_lock
-from quant_momentum.momentum import compute_momentum
-from quant_momentum.persistence import DailyMomentumRow
+from quant_momentum.momentum import compute_momentum, pct_change
+from quant_momentum.persistence import DailyMomentumRow, DailyPriceChangeRow
 from quant_momentum.signals import SubmitOutcome, build_payload
 
 log = logging.getLogger("quant_momentum.runner")
@@ -45,6 +46,42 @@ class RunSummary:
     signals_failed: int = 0
     error_message: str | None = None
     duration_seconds: float | None = None
+
+
+def _build_daily_price_change_row(
+    *,
+    symbol_id: int,
+    ticker: str,
+    bar_date: date,
+    adjustment_type: str,
+    close: Decimal,
+    prev_close: Decimal,
+    high: Decimal,
+    low: Decimal,
+    run_id: int | None,
+    computed_at: datetime,
+) -> DailyPriceChangeRow | None:
+    if low <= 0:
+        return None
+
+    close_change_amount = close - prev_close
+    intraday_change_amount = high - low
+    return DailyPriceChangeRow(
+        symbol_id=symbol_id,
+        ticker=ticker,
+        bar_date=bar_date,
+        adjustment_type=adjustment_type,
+        close=close,
+        prev_close=prev_close,
+        close_change_amount=close_change_amount,
+        close_change_percent=pct_change(close, prev_close),
+        high=high,
+        low=low,
+        intraday_change_amount=intraday_change_amount,
+        intraday_change_percent=pct_change(high, low),
+        run_id=run_id,
+        computed_at=computed_at,
+    )
 
 
 def run_momentum(
@@ -102,9 +139,34 @@ def run_momentum(
         closes_by_id = reader.read_trailing_closes(
             [s.symbol_id for s in symbols], resolved_as_of, adjustment
         )
+        daily_snapshots = reader.read_daily_snapshots(
+            [s.symbol_id for s in symbols], resolved_as_of, adjustment
+        )
         flagged: list[tuple[int, str, object]] = []
         for symbol in symbols:
             symbol_closes = closes_by_id.get(symbol.symbol_id)
+
+            if symbol_closes is not None and symbol_closes.bars_available >= 2:
+                snapshot = daily_snapshots.get(symbol.symbol_id)
+                if snapshot is not None and not dry_run:
+                    try:
+                        row = _build_daily_price_change_row(
+                            symbol_id=symbol.symbol_id,
+                            ticker=snapshot.ticker or symbol.ticker,
+                            bar_date=resolved_as_of,
+                            adjustment_type=adjustment,
+                            close=snapshot.close,
+                            prev_close=symbol_closes.closes[1].close,
+                            high=snapshot.high,
+                            low=snapshot.low,
+                            run_id=summary.run_id,
+                            computed_at=datetime.now(UTC),
+                        )
+                        if row is not None:
+                            store.upsert_daily_price_change(row)
+                    except Exception:
+                        log.exception("Daily price-change upsert failed for symbol_id=%s", symbol.symbol_id)
+
             if symbol_closes is None or symbol_closes.bars_available < _MIN_CLOSES_FOR_ANY_MOMENTUM:
                 summary.symbols_skipped += 1
                 continue
@@ -151,6 +213,13 @@ def run_momentum(
         summary.error_message = str(exc)
         log.exception("Momentum run failed")
     finally:
+        if not dry_run:
+            try:
+                cutoff = resolved_as_of - timedelta(days=settings.daily_change_retention_days - 1)
+                store.prune_daily_price_changes(cutoff)
+            except Exception:
+                log.exception("Daily price-change retention prune failed")
+
         summary.duration_seconds = round(time.perf_counter() - started, 3)
         if summary.run_id is not None and not dry_run:
             store.finalize_run(

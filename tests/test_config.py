@@ -16,6 +16,7 @@ def test_defaults() -> None:
     assert settings.momentum_direction_mode == "long_only"
     assert settings.momentum_submit_enabled is True
     assert settings.momentum_score_scale == 30.0
+    assert settings.daily_change_retention_days == 90
     assert settings.lookbacks == [5, 15, 30]
     assert settings.thresholds == {5: 0.0, 15: 0.0, 30: 0.0}
     assert settings.quant_redis_url is None
@@ -32,9 +33,10 @@ def test_rule_is_normalized_uppercase() -> None:
         ("momentum_rule", "sometimes"),
         ("momentum_adjustment_type", "dividend_adjusted"),
         ("momentum_direction_mode", "sideways"),
+        ("daily_change_retention_days", 0),
     ],
 )
-def test_invalid_values_rejected(field: str, value: str) -> None:
+def test_invalid_values_rejected(field: str, value: object) -> None:
     with pytest.raises(Exception):
         Settings(**{field: value})
 
