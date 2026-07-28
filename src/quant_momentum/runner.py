@@ -432,6 +432,14 @@ def run_command(args) -> int:
                 dry_run=args.dry_run,
             )
 
+    if args.schedule is not None and args.schedule <= 0:
+        log.error(
+            "Invalid --schedule=%d: interval must be a positive number of seconds "
+            "(check MOMENTUM_INTERVAL).",
+            args.schedule,
+        )
+        return 2
+
     if args.schedule:
         log.info("Starting scheduled momentum runs every %d seconds.", args.schedule)
         try:
