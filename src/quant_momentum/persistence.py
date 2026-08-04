@@ -133,10 +133,27 @@ _INSERT_SUBMISSION_SQL = text(
     """
     INSERT INTO momentum.signal_submissions
         (run_id, symbol_id, ticker, bar_date, idempotency_key, source,
-         direction, score, status, signal_cache_id, http_status, error)
+         submission_count, direction, score, status, signal_cache_id, http_status, error)
     VALUES
         (:run_id, :symbol_id, :ticker, :bar_date, :idempotency_key, :source,
-         :direction, :score, :status, :signal_cache_id, :http_status, :error)
+         1, :direction, :score, :status, :signal_cache_id, :http_status, :error)
+    ON CONFLICT (ticker, bar_date) DO UPDATE SET
+         run_id = EXCLUDED.run_id,
+         symbol_id = EXCLUDED.symbol_id,
+         idempotency_key = EXCLUDED.idempotency_key,
+         source = CASE
+             WHEN EXCLUDED.source = ANY(regexp_split_to_array(momentum.signal_submissions.source, '\\s*,\\s*'))
+                 THEN momentum.signal_submissions.source
+             ELSE momentum.signal_submissions.source || ',' || EXCLUDED.source
+         END,
+         submission_count = momentum.signal_submissions.submission_count + 1,
+         direction = EXCLUDED.direction,
+         score = EXCLUDED.score,
+         status = EXCLUDED.status,
+         signal_cache_id = EXCLUDED.signal_cache_id,
+         http_status = EXCLUDED.http_status,
+         error = EXCLUDED.error,
+         submitted_at = now()
     """
 )
 

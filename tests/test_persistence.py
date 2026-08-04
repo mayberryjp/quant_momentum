@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from quant_momentum.momentum import compute_momentum
 from quant_momentum.persistence import (
+    _INSERT_SUBMISSION_SQL,
     _UPSERT_DAILY_PRICE_CHANGE_SQL,
     _UPSERT_DAILY_MOMENTUM_SQL,
     DailyMomentumRow,
@@ -87,3 +88,10 @@ def test_daily_price_change_upsert_sql_is_idempotent() -> None:
     sql = str(_UPSERT_DAILY_PRICE_CHANGE_SQL).lower()
     assert "on conflict (symbol_id, bar_date, adjustment_type) do update" in sql
     assert "updated_at = now()" in sql
+
+
+def test_submission_upsert_merges_source_and_increments_counter() -> None:
+    sql = str(_INSERT_SUBMISSION_SQL).lower()
+    assert "on conflict (ticker, bar_date) do update" in sql
+    assert "submission_count = momentum.signal_submissions.submission_count + 1" in sql
+    assert "regexp_split_to_array(momentum.signal_submissions.source" in sql
