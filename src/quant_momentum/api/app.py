@@ -153,6 +153,17 @@ def create_app(**overrides: Callable) -> Bottle:
 
     api = Bottle()
 
+    @api.hook("after_request")
+    def add_cors_headers() -> None:
+        response.set_header("Access-Control-Allow-Origin", "*")
+        response.set_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        response.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+    @api.route("/<path:path>", method="OPTIONS")
+    def cors_preflight(path: str) -> str:
+        response.status = 204
+        return ""
+
     # -- health / readiness -------------------------------------------------
     @api.get("/health")
     def health() -> dict:

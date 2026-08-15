@@ -53,6 +53,24 @@ def test_health() -> None:
     assert _client().get("/health").json == {"status": "ok", "service": "quant-momentum-api"}
 
 
+def test_cors_allows_any_origin_and_preflight() -> None:
+    client = _client()
+
+    response = client.get("/health", headers={"Origin": "https://example.com"})
+    assert response.headers["Access-Control-Allow-Origin"] == "*"
+
+    preflight = client.options(
+        "/health",
+        headers={
+            "Origin": "https://example.com",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert preflight.status_code == 204
+    assert preflight.headers["Access-Control-Allow-Origin"] == "*"
+    assert preflight.headers["Access-Control-Allow-Methods"] == "GET, OPTIONS"
+
+
 def test_ready_ok() -> None:
     resp = _client().get("/ready")
     assert resp.status_code == 200
