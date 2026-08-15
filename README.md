@@ -43,7 +43,7 @@ python3 -m quant_momentum.cli --help  # explore the CLI
 
 ## Configuration
 
-All configuration is via environment variables (see [`.env.example`](.env.example)).
+All configuration is via environment variables in [`docker-compose.yml`](docker-compose.yml).
 Key knobs: `DATABASE_URL`, `API_PORT` (default `8020`), `MOMENTUM_RULE`,
 `MOMENTUM_ADJUSTMENT_TYPE`, `MOMENTUM_THRESHOLD_{5,15,30}D`, `QUANT_SIGNALS_BASE_URL`,
 and optional `QUANT_REDIS_URL` (run lock / heartbeat only).
