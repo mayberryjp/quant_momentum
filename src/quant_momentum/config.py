@@ -7,7 +7,9 @@ names may also be used programmatically (e.g. in tests).
 
 from __future__ import annotations
 
+from datetime import time
 from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,6 +17,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ADJUSTMENT_TYPES = ("unadjusted", "split_adjusted")
 MOMENTUM_RULES = ("ALL", "ANY", "MAJORITY")
 DIRECTION_MODES = ("long_only", "long_short")
+
+
+def parse_run_at(value: str) -> time:
+    """Parse a ``HH:MM`` or ``HH:MM:SS`` wall-clock time (24-hour)."""
+    parts = value.strip().split(":")
+    if len(parts) not in (2, 3) or not all(part.isdigit() for part in parts):
+        raise ValueError(f"Run time must be HH:MM or HH:MM:SS, got {value!r}")
+    hour, minute, *rest = (int(part) for part in parts)
+    second = rest[0] if rest else 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        raise ValueError(f"Run time out of range: {value!r}")
+    return time(hour, minute, second)
 
 
 class Settings(BaseSettings):
@@ -40,6 +54,8 @@ class Settings(BaseSettings):
 
     # -- Momentum compute ---------------------------------------------
     momentum_interval: int = Field(default=86400, alias="MOMENTUM_INTERVAL")
+    momentum_run_at: str = Field(default="", alias="MOMENTUM_RUN_AT")
+    momentum_timezone: str = Field(default="UTC", alias="MOMENTUM_TIMEZONE")
     momentum_adjustment_type: str = Field(default="unadjusted", alias="MOMENTUM_ADJUSTMENT_TYPE")
     momentum_lookbacks: str = Field(default="5,15,30", alias="MOMENTUM_LOOKBACKS")
     momentum_threshold_5d: float = Field(default=0.0, alias="MOMENTUM_THRESHOLD_5D")
@@ -64,6 +80,25 @@ class Settings(BaseSettings):
 
     # -- Optional Redis (run lock / heartbeat only) -------------------
     quant_redis_url: str | None = Field(default=None, alias="QUANT_REDIS_URL")
+
+    @field_validator("momentum_run_at")
+    @classmethod
+    def _validate_run_at(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            return ""
+        parse_run_at(value)
+        return value
+
+    @field_validator("momentum_timezone")
+    @classmethod
+    def _validate_timezone(cls, value: str) -> str:
+        value = value.strip() or "UTC"
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"MOMENTUM_TIMEZONE is not a valid IANA timezone: {value!r}") from exc
+        return value
 
     @field_validator("momentum_adjustment_type")
     @classmethod
@@ -93,6 +128,16 @@ class Settings(BaseSettings):
         if value < 1:
             raise ValueError("DAILY_CHANGE_RETENTION_DAYS must be >= 1")
         return value
+
+    @property
+    def run_at(self) -> time | None:
+        """Parsed ``MOMENTUM_RUN_AT`` wall-clock time, or ``None`` when unset."""
+        return parse_run_at(self.momentum_run_at) if self.momentum_run_at else None
+
+    @property
+    def timezone(self) -> ZoneInfo:
+        """Parsed ``MOMENTUM_TIMEZONE``."""
+        return ZoneInfo(self.momentum_timezone)
 
     @property
     def lookbacks(self) -> list[int]:

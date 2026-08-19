@@ -11,6 +11,9 @@ services:
 
       # -- Momentum compute --------------------------------------------------
       MOMENTUM_INTERVAL: "${MOMENTUM_INTERVAL:-86400}"
+      # Deterministic daily run time; when set it takes precedence over MOMENTUM_INTERVAL.
+      MOMENTUM_RUN_AT: "${MOMENTUM_RUN_AT:-21:30}"
+      MOMENTUM_TIMEZONE: ${MOMENTUM_TIMEZONE:-America/New_York}
       MOMENTUM_ADJUSTMENT_TYPE: ${MOMENTUM_ADJUSTMENT_TYPE:-unadjusted}
       MOMENTUM_LOOKBACKS: ${MOMENTUM_LOOKBACKS:-5,15,30}
       MOMENTUM_THRESHOLD_5D: "${MOMENTUM_THRESHOLD_5D:-0.0}"

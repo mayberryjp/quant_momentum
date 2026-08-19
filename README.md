@@ -54,10 +54,15 @@ and optional `QUANT_REDIS_URL` (run lock / heartbeat only).
 python3 -m quant_momentum.cli db upgrade | verify | downgrade-base
 python3 -m quant_momentum.cli momentum run [--as-of YYYY-MM-DD] [--tickers AAPL,MSFT] \
     [--adjustment-type unadjusted|split_adjusted] [--rule ALL|ANY|MAJORITY] \
-    [--no-submit] [--dry-run] [--schedule SECONDS]
+    [--no-submit] [--dry-run] [--schedule SECONDS] [--at HH:MM] [--timezone IANA_TZ]
 python3 -m quant_momentum.cli momentum backfill --from-date YYYY-MM-DD --to-date YYYY-MM-DD
 python3 -m quant_momentum.cli run-summary --latest
 ```
+
+Set `MOMENTUM_RUN_AT` (e.g. `21:30`) and `MOMENTUM_TIMEZONE` (e.g. `America/New_York`)
+to run once per day at a fixed wall-clock time, with DST handled by the timezone
+database. When set it takes precedence over the drifting `MOMENTUM_INTERVAL`
+(`--schedule`) loop; `--at` / `--timezone` override the environment.
 
 ## Docker
 
@@ -71,7 +76,8 @@ docker compose up
 Under `supervisord` the container runs three programs (see [supervisord.conf](supervisord.conf)):
 
 1. `db-migrate` (priority 10) — `alembic upgrade head`, runs once.
-2. `momentum-compute` (priority 20) — `momentum run --schedule $MOMENTUM_INTERVAL`.
+2. `momentum-compute` (priority 20) — `momentum run --schedule $MOMENTUM_INTERVAL`,
+   or a daily run at `$MOMENTUM_RUN_AT` in `$MOMENTUM_TIMEZONE` when that is set.
 3. `quant-momentum-api` (priority 20) — the read API on `API_PORT` (8020).
 
 `docker compose up` brings up migrate → compute → API against the shared `quant`

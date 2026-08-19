@@ -49,6 +49,16 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--no-submit", action="store_true", help="Skip watchlist submission.")
     run_p.add_argument("--dry-run", action="store_true", help="Compute without persisting or submitting.")
     run_p.add_argument("--schedule", type=int, metavar="SECONDS", help="Run continuously every N seconds.")
+    run_p.add_argument(
+        "--at",
+        metavar="HH:MM",
+        help="Run once per day at this wall-clock time (overrides --schedule).",
+    )
+    run_p.add_argument(
+        "--timezone",
+        metavar="IANA_TZ",
+        help="Timezone for --at (default: MOMENTUM_TIMEZONE, else UTC).",
+    )
 
     backfill_p = momentum_cmds.add_parser(
         "backfill",

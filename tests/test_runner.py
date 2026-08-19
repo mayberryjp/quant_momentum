@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from quant_momentum.bars import BarClose, SymbolCloses, SymbolRef
 from quant_momentum.config import Settings
-from quant_momentum.runner import _parse_as_of, _parse_tickers, backfill, run_momentum
+from quant_momentum.runner import _parse_as_of, _parse_tickers, backfill, next_run_at, run_momentum
 
 _AS_OF = date(2026, 7, 6)
 
@@ -205,6 +206,25 @@ def test_parse_helpers() -> None:
     assert _parse_as_of("2026-07-06") == date(2026, 7, 6)
     assert _parse_tickers("aapl, msft ,tsla") == ["AAPL", "MSFT", "TSLA"]
     assert _parse_tickers(None) is None
+
+
+def test_next_run_at_picks_today_then_tomorrow() -> None:
+    tz = ZoneInfo("America/New_York")
+    run_at = time(21, 30)
+
+    before = datetime(2026, 7, 6, 9, 0, tzinfo=tz)
+    assert next_run_at(run_at, tz, before) == datetime(2026, 7, 6, 21, 30, tzinfo=tz)
+
+    after = datetime(2026, 7, 6, 21, 30, tzinfo=tz)
+    assert next_run_at(run_at, tz, after) == datetime(2026, 7, 7, 21, 30, tzinfo=tz)
+
+
+def test_next_run_at_holds_wall_clock_across_dst() -> None:
+    tz = ZoneInfo("America/New_York")
+    # 2026-03-08 is the US spring-forward date; the target stays at 09:00 local.
+    target = next_run_at(time(9, 0), tz, datetime(2026, 3, 7, 10, 0, tzinfo=tz))
+    assert (target.hour, target.minute, target.date()) == (9, 0, date(2026, 3, 8))
+    assert target.utcoffset().total_seconds() == -4 * 3600
 
 
 def test_submission_only_flagged_with_counters_and_audit() -> None:

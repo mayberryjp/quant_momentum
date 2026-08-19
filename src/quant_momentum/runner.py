@@ -11,10 +11,11 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time as dtime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
-from quant_momentum.config import Settings, get_settings
+from quant_momentum.config import Settings, get_settings, parse_run_at
 from quant_momentum.lock import run_lock
 from quant_momentum.momentum import compute_momentum, pct_change
 from quant_momentum.persistence import DailyMomentumRow, DailyPriceChangeRow
@@ -25,6 +26,19 @@ log = logging.getLogger("quant_momentum.runner")
 # Shortest lookback needs lookback + 1 closes; below this we cannot compute any
 # momentum interval, so the symbol is skipped.
 _MIN_CLOSES_FOR_ANY_MOMENTUM = 6
+
+# Wake up periodically rather than sleeping straight through to the target so a
+# host clock adjustment (NTP step, DST transition) is picked up mid-wait.
+_SCHEDULE_POLL_SECONDS = 60
+
+
+def next_run_at(run_at: dtime, tz: ZoneInfo, now: datetime | None = None) -> datetime:
+    """Return the next occurrence of wall-clock ``run_at`` in ``tz`` strictly after ``now``."""
+    current = (now or datetime.now(tz)).astimezone(tz)
+    candidate = datetime.combine(current.date(), run_at, tzinfo=tz)
+    if candidate <= current:
+        candidate = datetime.combine(current.date() + timedelta(days=1), run_at, tzinfo=tz)
+    return candidate
 
 
 @dataclass
@@ -431,6 +445,30 @@ def run_command(args) -> int:
                 rule=args.rule,
                 dry_run=args.dry_run,
             )
+
+    raw_at = getattr(args, "at", None) or settings.momentum_run_at
+    if raw_at:
+        try:
+            run_at = parse_run_at(raw_at)
+            tz = ZoneInfo(getattr(args, "timezone", None) or settings.momentum_timezone)
+        except Exception as exc:
+            log.error("Invalid daily schedule (check MOMENTUM_RUN_AT/MOMENTUM_TIMEZONE): %s", exc)
+            return 2
+
+        log.info("Starting daily momentum runs at %s %s.", run_at.isoformat(), tz.key)
+        try:
+            while True:
+                target = next_run_at(run_at, tz)
+                log.info("Next momentum run scheduled for %s.", target.isoformat())
+                while True:
+                    remaining = (target - datetime.now(tz)).total_seconds()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(remaining, _SCHEDULE_POLL_SECONDS))
+                _once()
+        except KeyboardInterrupt:  # pragma: no cover - operator interrupt
+            log.info("Scheduled runs interrupted; exiting.")
+            return 0
 
     if args.schedule is not None and args.schedule <= 0:
         log.error(
