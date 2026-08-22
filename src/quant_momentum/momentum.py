@@ -4,8 +4,11 @@ No I/O: given a symbol's ordered closes (most-recent-first, ``closes[0]`` is the
 as-of close, ``closes[n]`` is ``n`` trading days earlier), compute:
 
 * N-day close-to-close momentum in **percentage points** for each lookback,
-* a per-interval binary flag ``M_N >= threshold_N``,
-* a combined flag governed by ``ALL`` / ``ANY`` / ``MAJORITY``,
+* segment (interval) momentum for the 5->15 and 15->30 day windows, which
+  isolate a past window so recent short-term momentum cannot leak in,
+* a per-interval binary flag ``M_N >= threshold_N`` (per lookback and segment),
+* a combined flag over the 5-day lookback plus the two segments, governed by
+  ``ALL`` / ``ANY`` / ``MAJORITY``,
 * rolling 30-day daily-change statistics (avg / median / min / max) and the
   floor / ceiling close over the trailing 30 trading-day window.
 
@@ -23,6 +26,11 @@ from statistics import mean, median
 
 MOMENTUM_RULES = ("ALL", "ANY", "MAJORITY")
 DEFAULT_LOOKBACKS = (5, 15, 30)
+
+# Segment (interval) momentum windows as (near, far) close offsets. Each isolates
+# the return between two past closes so a recent move cannot leak in: 5->15 uses
+# the closes 5 and 15 days ago; 15->30 uses the closes 15 and 30 days ago.
+DEFAULT_SEGMENTS = ((5, 15), (15, 30))
 
 # 31 closes -> 30 consecutive daily changes over the trailing 30 trading days.
 STAT_WINDOW_CLOSES = 31
@@ -108,11 +116,30 @@ class IntervalResult:
 
 
 @dataclass(frozen=True)
+class SegmentResult:
+    """Momentum over a past window bounded by two close offsets.
+
+    ``near`` is the more recent offset and ``far`` the older one; the momentum is
+    the return from ``far_close`` to ``near_close`` so a move inside the most
+    recent ``near`` days cannot influence it.
+    """
+
+    near: int
+    far: int
+    near_close: Decimal | None
+    far_close: Decimal | None
+    momentum: Decimal | None
+    is_momentum: bool
+    threshold: Decimal
+
+
+@dataclass(frozen=True)
 class MomentumResult:
     close: Decimal
     bars_available: int
     momentum_rule: str
     intervals: dict[int, IntervalResult]
+    segments: dict[tuple[int, int], SegmentResult]
     is_momentum: bool
     stats: RollingStats
 
@@ -127,6 +154,14 @@ class MomentumResult:
     def flag(self, lookback: int) -> bool:
         interval = self.intervals.get(lookback)
         return interval.is_momentum if interval else False
+
+    def segment_momentum(self, near: int, far: int) -> Decimal | None:
+        segment = self.segments.get((near, far))
+        return segment.momentum if segment else None
+
+    def segment_flag(self, near: int, far: int) -> bool:
+        segment = self.segments.get((near, far))
+        return segment.is_momentum if segment else False
 
     def mean_momentum(self) -> Decimal | None:
         """Mean of the available interval momenta (used for scoring)."""
@@ -152,8 +187,10 @@ def compute_momentum(
     thresholds: Mapping[int, float | Decimal | str],
     rule: str,
     lookbacks: Sequence[int] = DEFAULT_LOOKBACKS,
+    segments: Sequence[tuple[int, int]] = DEFAULT_SEGMENTS,
+    segment_thresholds: Mapping[tuple[int, int], float | Decimal | str] | None = None,
 ) -> MomentumResult:
-    """Compute momentum, per-interval flags, combined flag, and rolling stats."""
+    """Compute momentum, per-interval/segment flags, combined flag, and rolling stats."""
     rule = rule.upper()
     if rule not in MOMENTUM_RULES:
         raise ValueError(f"unknown momentum rule: {rule!r}")
@@ -181,12 +218,40 @@ def compute_momentum(
             threshold=threshold,
         )
 
-    combined = _combine([intervals[n].is_momentum for n in lookbacks], rule)
+    segment_thresholds = segment_thresholds or {}
+    segment_results: dict[tuple[int, int], SegmentResult] = {}
+    for near, far in segments:
+        seg_threshold = Decimal(str(segment_thresholds.get((near, far), 0)))
+        if bars_available >= far + 1:
+            near_close = closes[near]
+            far_close = closes[far]
+            seg_value = pct_change(near_close, far_close)
+        else:
+            near_close = far_close = None
+            seg_value = None
+        seg_flag = seg_value is not None and seg_value >= seg_threshold
+        segment_results[(near, far)] = SegmentResult(
+            near=near,
+            far=far,
+            near_close=near_close if seg_value is not None else None,
+            far_close=far_close if seg_value is not None else None,
+            momentum=seg_value,
+            is_momentum=seg_flag,
+            threshold=seg_threshold,
+        )
+
+    # Combined indicator: the 5-day lookback plus the two segment flags. The
+    # full-window 15d/30d flags are still computed and stored, but excluded here
+    # so a strong recent move cannot single-handedly flag the longer windows.
+    combined_flags = [intervals[n].is_momentum for n in lookbacks if n == 5]
+    combined_flags += [segment_results[key].is_momentum for key in segments]
+    combined = _combine(combined_flags, rule)
     return MomentumResult(
         close=close,
         bars_available=bars_available,
         momentum_rule=rule,
         intervals=intervals,
+        segments=segment_results,
         is_momentum=combined,
         stats=rolling_30d_stats(closes),
     )

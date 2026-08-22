@@ -189,6 +189,7 @@ def run_momentum(
                     [bar.close for bar in symbol_closes.closes],
                     thresholds=thresholds,
                     rule=resolved_rule,
+                    segment_thresholds=settings.segment_thresholds,
                 )
                 ticker = symbol_closes.ticker or symbol.ticker
                 if not dry_run:

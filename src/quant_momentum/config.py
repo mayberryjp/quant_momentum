@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     momentum_threshold_5d: float = Field(default=0.0, alias="MOMENTUM_THRESHOLD_5D")
     momentum_threshold_15d: float = Field(default=0.0, alias="MOMENTUM_THRESHOLD_15D")
     momentum_threshold_30d: float = Field(default=0.0, alias="MOMENTUM_THRESHOLD_30D")
+    momentum_threshold_5_15d: float = Field(default=0.0, alias="MOMENTUM_THRESHOLD_5_15D")
+    momentum_threshold_15_30d: float = Field(default=0.0, alias="MOMENTUM_THRESHOLD_15_30D")
     momentum_rule: str = Field(default="ALL", alias="MOMENTUM_RULE")
     momentum_min_history: int = Field(default=31, alias="MOMENTUM_MIN_HISTORY")
     momentum_direction_mode: str = Field(default="long_only", alias="MOMENTUM_DIRECTION_MODE")
@@ -151,6 +153,14 @@ class Settings(BaseSettings):
             5: self.momentum_threshold_5d,
             15: self.momentum_threshold_15d,
             30: self.momentum_threshold_30d,
+        }
+
+    @property
+    def segment_thresholds(self) -> dict[tuple[int, int], float]:
+        """Per-segment thresholds keyed by (near, far) offset (percentage points)."""
+        return {
+            (5, 15): self.momentum_threshold_5_15d,
+            (15, 30): self.momentum_threshold_15_30d,
         }
 
 

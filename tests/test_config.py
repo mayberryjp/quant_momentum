@@ -19,6 +19,7 @@ def test_defaults() -> None:
     assert settings.daily_change_retention_days == 90
     assert settings.lookbacks == [5, 15, 30]
     assert settings.thresholds == {5: 0.0, 15: 0.0, 30: 0.0}
+    assert settings.segment_thresholds == {(5, 15): 0.0, (15, 30): 0.0}
     assert settings.quant_redis_url is None
 
 
@@ -43,3 +44,8 @@ def test_invalid_values_rejected(field: str, value: object) -> None:
 
 def test_custom_lookbacks_parsed() -> None:
     assert Settings(momentum_lookbacks="10, 20 ,40").lookbacks == [10, 20, 40]
+
+
+def test_segment_thresholds_overridden() -> None:
+    settings = Settings(momentum_threshold_5_15d=1.5, momentum_threshold_15_30d=2.0)
+    assert settings.segment_thresholds == {(5, 15): 1.5, (15, 30): 2.0}

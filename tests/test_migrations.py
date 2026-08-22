@@ -23,11 +23,11 @@ def _render_sql(target: str) -> str:
     return buffer.getvalue().lower()
 
 
-def test_single_head_revision_0003() -> None:
+def test_single_head_revision_0004() -> None:
     script = ScriptDirectory.from_config(make_alembic_config())
-    assert script.get_heads() == ["0003"]
-    rev = script.get_revision("0003")
-    assert rev.down_revision == "0002"
+    assert script.get_heads() == ["0004"]
+    rev = script.get_revision("0004")
+    assert rev.down_revision == "0003"
 
 
 def test_upgrade_creates_schema_tables_and_indexes() -> None:
@@ -65,8 +65,22 @@ def test_upgrade_includes_rolling_30d_stat_columns() -> None:
         assert column in sql
 
 
+def test_upgrade_includes_segment_momentum_columns() -> None:
+    sql = _render_sql("head")
+    for column in (
+        "momentum_5_15d",
+        "momentum_15_30d",
+        "is_momentum_5_15d",
+        "is_momentum_15_30d",
+        "threshold_5_15d",
+        "threshold_15_30d",
+    ):
+        assert f"add column {column}" in sql
+
+
 def test_downgrade_only_touches_momentum_schema() -> None:
-    sql = _render_sql("0003:base")
+    sql = _render_sql("0004:base")
+    assert "drop column if exists momentum_5_15d" in sql
     assert "drop table if exists momentum.daily_price_changes" in sql
     assert "drop table if exists momentum.daily_momentum" in sql
     assert "drop table if exists momentum.momentum_runs" in sql

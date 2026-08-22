@@ -18,11 +18,13 @@ _NOW = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)
 
 
 def _series() -> list[Decimal]:
+    # Monotone rising (most-recent-first) so the 5d lookback and both segments
+    # are positive -> combined is_momentum is True under the ALL rule.
     closes = [Decimal("100")] * 31
     closes[0] = Decimal("110")
     closes[5] = Decimal("100")
-    closes[15] = Decimal("105")
-    closes[30] = Decimal("100")
+    closes[15] = Decimal("90")
+    closes[30] = Decimal("80")
     return closes
 
 
@@ -41,20 +43,27 @@ def test_from_result_maps_all_columns() -> None:
     assert row.ticker == "AAPL"
     assert row.close == Decimal("110")
     assert row.close_5d_ago == Decimal("100")
-    assert row.close_15d_ago == Decimal("105")
-    assert row.close_30d_ago == Decimal("100")
+    assert row.close_15d_ago == Decimal("90")
+    assert row.close_30d_ago == Decimal("80")
     assert row.momentum_5d == Decimal("10.000000")
-    assert row.momentum_15d == Decimal("4.761905")
-    assert row.momentum_30d == Decimal("10.000000")
+    assert row.momentum_15d == Decimal("22.222222")
+    assert row.momentum_30d == Decimal("37.500000")
+    # Segment returns isolate a past window (unaffected by the recent 5 days).
+    assert row.momentum_5_15d == Decimal("11.111111")   # 100/90 - 1
+    assert row.momentum_15_30d == Decimal("12.500000")   # 90/80 - 1
     assert row.is_momentum_5d is True
+    assert row.is_momentum_5_15d is True
+    assert row.is_momentum_15_30d is True
     assert row.is_momentum is True
     assert row.threshold_5d == Decimal("0")
+    assert row.threshold_5_15d == Decimal("0")
+    assert row.threshold_15_30d == Decimal("0")
     assert row.bars_available == 31
     assert row.run_id == 5
     assert row.computed_at == _NOW
     # rolling stats populated for a full 31-close window
     assert row.avg_daily_change_30d is not None
-    assert row.floor_price_30d == Decimal("100")
+    assert row.floor_price_30d == Decimal("80")
     assert row.ceiling_price_30d == Decimal("110")
 
 
@@ -71,6 +80,11 @@ def test_from_result_insufficient_history_nulls() -> None:
     )
     assert row.momentum_5d is None
     assert row.close_5d_ago is None
+    assert row.momentum_5_15d is None
+    assert row.momentum_15_30d is None
+    assert row.is_momentum_5_15d is False
+    assert row.is_momentum_15_30d is False
+    assert row.threshold_5_15d == Decimal("0")
     assert row.is_momentum is False
     assert row.avg_daily_change_30d is None
     assert row.floor_price_30d is None
@@ -82,6 +96,20 @@ def test_upsert_sql_is_idempotent() -> None:
     sql = str(_UPSERT_DAILY_MOMENTUM_SQL).lower()
     assert "on conflict (symbol_id, bar_date, adjustment_type) do update" in sql
     assert "updated_at = now()" in sql
+
+
+def test_upsert_sql_includes_segment_columns() -> None:
+    sql = str(_UPSERT_DAILY_MOMENTUM_SQL).lower()
+    for column in (
+        "momentum_5_15d",
+        "momentum_15_30d",
+        "is_momentum_5_15d",
+        "is_momentum_15_30d",
+        "threshold_5_15d",
+        "threshold_15_30d",
+    ):
+        assert f":{column}" in sql               # bound in the INSERT
+        assert f"{column} = excluded.{column}" in sql  # refreshed on conflict
 
 
 def test_daily_price_change_upsert_sql_is_idempotent() -> None:

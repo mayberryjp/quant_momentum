@@ -79,6 +79,10 @@ def _thresholds(t5=0, t15=0, t30=0) -> dict[int, float]:
     return {5: t5, 15: t15, 30: t30}
 
 
+def _segment_thresholds(t515=0, t1530=0) -> dict[tuple[int, int], float]:
+    return {(5, 15): t515, (15, 30): t1530}
+
+
 def test_momentum_values_positive_negative_zero() -> None:
     closes = _series(i0=Decimal("110"), i5=Decimal("100"), i15=Decimal("121"), i30=Decimal("110"))
     result = compute_momentum(closes, thresholds=_thresholds(), rule="ANY")
@@ -105,12 +109,13 @@ def test_threshold_boundary_is_inclusive() -> None:
     [("ALL", False), ("ANY", True), ("MAJORITY", True)],
 )
 def test_combined_rules(rule: str, expected: bool) -> None:
-    # flags: 5d True (+10%), 15d False (-9%), 30d True (0% >= 0)
+    # Combined flag is over {5d, 5-15d, 15-30d}: 5d True (+10%),
+    # 5-15d False (100/121 -> -17%), 15-30d True (121/110 -> +10%).
     closes = _series(i0=Decimal("110"), i5=Decimal("100"), i15=Decimal("121"), i30=Decimal("110"))
     result = compute_momentum(closes, thresholds=_thresholds(), rule=rule)
     assert result.flag(5) is True
-    assert result.flag(15) is False
-    assert result.flag(30) is True
+    assert result.segment_flag(5, 15) is False
+    assert result.segment_flag(15, 30) is True
     assert result.is_momentum is expected
 
 
@@ -144,3 +149,57 @@ def test_mean_momentum_over_available_intervals() -> None:
 def test_unknown_rule_rejected() -> None:
     with pytest.raises(ValueError):
         compute_momentum([Decimal("100")] * 31, thresholds=_thresholds(), rule="SOMETIMES")
+
+
+# --------------------------------------------------------------------------
+# segment momentum: 5-15d and 15-30d isolate a past window
+# --------------------------------------------------------------------------
+def test_segment_momentum_isolates_past_window() -> None:
+    # A large recent move (i0) does not touch the segment returns, which are
+    # computed purely from the closes 5 / 15 / 30 days ago.
+    closes = _series(i0=Decimal("500"), i5=Decimal("110"), i15=Decimal("100"), i30=Decimal("80"))
+    result = compute_momentum(closes, thresholds=_thresholds(), rule="ANY")
+    assert result.segment_momentum(5, 15) == Decimal("10.000000")   # 110/100 - 1
+    assert result.segment_momentum(15, 30) == Decimal("25.000000")  # 100/80 - 1
+    assert result.segment_flag(5, 15) is True
+    assert result.segment_flag(15, 30) is True
+
+
+def test_segment_history_requirements() -> None:
+    # 16 closes: 5-15d is computable (needs offset 15); 15-30d is not (needs 30).
+    closes = [Decimal("110")] + [Decimal("100")] * 15
+    result = compute_momentum(closes, thresholds=_thresholds(), rule="ANY")
+    assert result.segment_momentum(5, 15) == Decimal("0.000000")
+    assert result.segment_flag(5, 15) is True
+    assert result.segment_momentum(15, 30) is None
+    assert result.segment_flag(15, 30) is False
+
+
+def test_segment_threshold_boundary_is_inclusive() -> None:
+    closes = _series(i5=Decimal("110"), i15=Decimal("100"))  # 5-15d = +10%
+    at = compute_momentum(
+        closes,
+        thresholds=_thresholds(),
+        rule="ANY",
+        segment_thresholds=_segment_thresholds(t515=10),
+    )
+    assert at.segment_flag(5, 15) is True
+    above = compute_momentum(
+        closes,
+        thresholds=_thresholds(),
+        rule="ANY",
+        segment_thresholds={(5, 15): Decimal("10.000001"), (15, 30): 0},
+    )
+    assert above.segment_flag(5, 15) is False
+
+
+def test_combined_excludes_full_window_15_30d_flags() -> None:
+    # 15d / 30d full-window momentum are positive, but the 5-15d segment is
+    # negative, so under ALL the combined flag is driven False -- the old
+    # {5, 15, 30} rule would instead have flagged it.
+    closes = _series(i0=Decimal("110"), i5=Decimal("95"), i15=Decimal("100"), i30=Decimal("90"))
+    result = compute_momentum(closes, thresholds=_thresholds(), rule="ALL")
+    assert result.flag(15) is True   # 110/100 - 1 = +10%
+    assert result.flag(30) is True   # 110/90 - 1 = +22%
+    assert result.segment_flag(5, 15) is False  # 95/100 - 1 = -5%
+    assert result.is_momentum is False

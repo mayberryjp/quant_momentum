@@ -31,14 +31,20 @@ class DailyMomentumRow:
     momentum_5d: Decimal | None
     momentum_15d: Decimal | None
     momentum_30d: Decimal | None
+    momentum_5_15d: Decimal | None
+    momentum_15_30d: Decimal | None
     is_momentum_5d: bool
     is_momentum_15d: bool
     is_momentum_30d: bool
+    is_momentum_5_15d: bool
+    is_momentum_15_30d: bool
     is_momentum: bool
     momentum_rule: str
     threshold_5d: Decimal
     threshold_15d: Decimal
     threshold_30d: Decimal
+    threshold_5_15d: Decimal
+    threshold_15_30d: Decimal
     avg_daily_change_30d: Decimal | None
     median_daily_change_30d: Decimal | None
     min_daily_change_30d: Decimal | None
@@ -67,6 +73,10 @@ class DailyMomentumRow:
             interval = result.intervals.get(lookback)
             return interval.threshold if interval else Decimal("0")
 
+        def segment_threshold(near: int, far: int) -> Decimal:
+            segment = result.segments.get((near, far))
+            return segment.threshold if segment else Decimal("0")
+
         return cls(
             symbol_id=symbol_id,
             ticker=ticker,
@@ -79,14 +89,20 @@ class DailyMomentumRow:
             momentum_5d=result.momentum(5),
             momentum_15d=result.momentum(15),
             momentum_30d=result.momentum(30),
+            momentum_5_15d=result.segment_momentum(5, 15),
+            momentum_15_30d=result.segment_momentum(15, 30),
             is_momentum_5d=result.flag(5),
             is_momentum_15d=result.flag(15),
             is_momentum_30d=result.flag(30),
+            is_momentum_5_15d=result.segment_flag(5, 15),
+            is_momentum_15_30d=result.segment_flag(15, 30),
             is_momentum=result.is_momentum,
             momentum_rule=result.momentum_rule,
             threshold_5d=threshold(5),
             threshold_15d=threshold(15),
             threshold_30d=threshold(30),
+            threshold_5_15d=segment_threshold(5, 15),
+            threshold_15_30d=segment_threshold(15, 30),
             avg_daily_change_30d=stats.avg_daily_change,
             median_daily_change_30d=stats.median_daily_change,
             min_daily_change_30d=stats.min_daily_change,
@@ -216,8 +232,11 @@ _UPSERT_DAILY_MOMENTUM_SQL = text(
         (symbol_id, ticker, bar_date, adjustment_type, close,
          close_5d_ago, close_15d_ago, close_30d_ago,
          momentum_5d, momentum_15d, momentum_30d,
-         is_momentum_5d, is_momentum_15d, is_momentum_30d, is_momentum,
+         momentum_5_15d, momentum_15_30d,
+         is_momentum_5d, is_momentum_15d, is_momentum_30d,
+         is_momentum_5_15d, is_momentum_15_30d, is_momentum,
          momentum_rule, threshold_5d, threshold_15d, threshold_30d,
+         threshold_5_15d, threshold_15_30d,
          avg_daily_change_30d, median_daily_change_30d,
          min_daily_change_30d, max_daily_change_30d,
          floor_price_30d, ceiling_price_30d,
@@ -226,8 +245,11 @@ _UPSERT_DAILY_MOMENTUM_SQL = text(
         (:symbol_id, :ticker, :bar_date, :adjustment_type, :close,
          :close_5d_ago, :close_15d_ago, :close_30d_ago,
          :momentum_5d, :momentum_15d, :momentum_30d,
-         :is_momentum_5d, :is_momentum_15d, :is_momentum_30d, :is_momentum,
+         :momentum_5_15d, :momentum_15_30d,
+         :is_momentum_5d, :is_momentum_15d, :is_momentum_30d,
+         :is_momentum_5_15d, :is_momentum_15_30d, :is_momentum,
          :momentum_rule, :threshold_5d, :threshold_15d, :threshold_30d,
+         :threshold_5_15d, :threshold_15_30d,
          :avg_daily_change_30d, :median_daily_change_30d,
          :min_daily_change_30d, :max_daily_change_30d,
          :floor_price_30d, :ceiling_price_30d,
@@ -241,14 +263,20 @@ _UPSERT_DAILY_MOMENTUM_SQL = text(
          momentum_5d = EXCLUDED.momentum_5d,
          momentum_15d = EXCLUDED.momentum_15d,
          momentum_30d = EXCLUDED.momentum_30d,
+         momentum_5_15d = EXCLUDED.momentum_5_15d,
+         momentum_15_30d = EXCLUDED.momentum_15_30d,
          is_momentum_5d = EXCLUDED.is_momentum_5d,
          is_momentum_15d = EXCLUDED.is_momentum_15d,
          is_momentum_30d = EXCLUDED.is_momentum_30d,
+         is_momentum_5_15d = EXCLUDED.is_momentum_5_15d,
+         is_momentum_15_30d = EXCLUDED.is_momentum_15_30d,
          is_momentum = EXCLUDED.is_momentum,
          momentum_rule = EXCLUDED.momentum_rule,
          threshold_5d = EXCLUDED.threshold_5d,
          threshold_15d = EXCLUDED.threshold_15d,
          threshold_30d = EXCLUDED.threshold_30d,
+         threshold_5_15d = EXCLUDED.threshold_5_15d,
+         threshold_15_30d = EXCLUDED.threshold_15_30d,
          avg_daily_change_30d = EXCLUDED.avg_daily_change_30d,
          median_daily_change_30d = EXCLUDED.median_daily_change_30d,
          min_daily_change_30d = EXCLUDED.min_daily_change_30d,
