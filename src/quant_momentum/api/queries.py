@@ -46,7 +46,7 @@ class MomentumListParams:
 @dataclass(frozen=True)
 class RunListParams:
     status: str | None = None
-    limit: int = 20
+    limit: int | None = None
     offset: int = 0
 
 
@@ -179,14 +179,20 @@ def list_daily_changes(engine: Engine, params: DailyChangeListParams) -> dict[st
 
 def list_runs(engine: Engine, params: RunListParams) -> dict[str, Any]:
     clauses: list[str] = []
-    values: dict[str, Any] = {"limit": params.limit, "offset": params.offset}
+    values: dict[str, Any] = {}
     if params.status:
         clauses.append("status = :status")
         values["status"] = params.status
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    if params.limit is not None:
+        values["limit"] = params.limit
+        values["offset"] = params.offset
+        pagination = "LIMIT :limit OFFSET :offset"
+    else:
+        pagination = ""
     sql = text(
         f"SELECT * FROM momentum.momentum_runs {where} "
-        "ORDER BY id DESC LIMIT :limit OFFSET :offset"
+        f"ORDER BY id DESC {pagination}"
     )
     with engine.connect() as conn:
         rows = [_row(m) for m in conn.execute(sql, values).mappings()]

@@ -265,7 +265,7 @@ def create_app(**overrides: Callable) -> Bottle:
         try:
             params = RunListParams(
                 status=_status_param(request.query.get("status")),
-                limit=_int_param(request.query.get("limit"), default=20, ge=1, le=100),
+                limit=_int_param(request.query.get("limit"), default=None, ge=1),
                 offset=_int_param(request.query.get("offset"), default=0, ge=0),
             )
         except _ValidationError as exc:
