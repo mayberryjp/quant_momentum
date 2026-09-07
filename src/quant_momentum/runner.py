@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time as dtime, timedelta
+from datetime import date, datetime, time as dtime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -174,7 +174,7 @@ def run_momentum(
                             high=snapshot.high,
                             low=snapshot.low,
                             run_id=summary.run_id,
-                            computed_at=datetime.now(UTC),
+                            computed_at=datetime.now().astimezone(),
                         )
                         if row is not None:
                             store.upsert_daily_price_change(row)
@@ -201,7 +201,7 @@ def run_momentum(
                             bar_date=resolved_as_of,
                             adjustment_type=adjustment,
                             run_id=summary.run_id,
-                            computed_at=datetime.now(UTC),
+                            computed_at=datetime.now().astimezone(),
                         )
                     )
                 summary.symbols_computed += 1

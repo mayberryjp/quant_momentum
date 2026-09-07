@@ -8,6 +8,7 @@ CLI ``--help`` path stays fast and DB-free.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from sqlalchemy import Engine, create_engine
@@ -28,8 +29,19 @@ def get_database_url() -> str:
 
 
 def get_engine(url: str | None = None) -> Engine:
-    """Return a SQLAlchemy engine with liveness pre-ping enabled."""
-    return create_engine(url or get_database_url(), pool_pre_ping=True, future=True)
+    """Return a SQLAlchemy engine with liveness pre-ping enabled.
+
+    The Postgres session time zone is pinned to the container's local zone
+    (``TZ``) so every TIMESTAMPTZ is stored and returned in local time.
+    """
+    local_tz = os.environ.get("TZ", "").strip()
+    connect_args = {"options": f"-c timezone={local_tz}"} if local_tz else {}
+    return create_engine(
+        url or get_database_url(),
+        pool_pre_ping=True,
+        future=True,
+        connect_args=connect_args,
+    )
 
 
 def make_alembic_config(url: str | None = None):
