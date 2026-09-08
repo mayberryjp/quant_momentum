@@ -1,21 +1,27 @@
 """Upstream data access: active symbols and trailing closes (spec §7).
 
-Reads only the shared ``symbol_master`` and ``market_data`` schemas (owned by
-``quant_symbols`` / ``quant_daily_bars``). All SQL is parameterized. The pure
-row-shaping logic (:func:`build_trailing_closes`) is separated from execution
-so it can be unit-tested without a live database.
+Active symbols are read from the shared ``symbol_master`` schema (owned by
+``quant_symbols``) with parameterized SQL. Daily bars are fetched from the
+``quant_daily_bars`` service over its HTTP API rather than by reading its
+``daily_bars`` table directly. The pure row-shaping logic
+(:func:`build_trailing_closes`) is separated from execution so it can be
+unit-tested without a live database or network.
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Integer, Text, bindparam, text
+import requests
+from sqlalchemy import Text, bindparam, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.engine import Connection, Engine
+
+from quant_momentum.config import Settings
 
 # Longest lookback we need history for; also covers the rolling 30-day stats,
 # which require 31 closes (30 consecutive daily changes).
@@ -77,37 +83,6 @@ _RESOLVE_BY_TICKER_SQL = text(
     "WHERE canonical_ticker = ANY(:tickers) ORDER BY id"
 ).bindparams(bindparam("tickers", type_=ARRAY(Text)))
 
-_LATEST_BAR_DATE_SQL = text(
-    "SELECT MAX(bar_date) FROM market_data.daily_bars WHERE adjustment_type = :adj"
-)
-
-_TRAILING_CLOSES_SQL = text(
-    """
-    SELECT symbol_id, ticker, bar_date, close, rn
-    FROM (
-        SELECT symbol_id, ticker, bar_date, close,
-               ROW_NUMBER() OVER (PARTITION BY symbol_id ORDER BY bar_date DESC) AS rn
-        FROM market_data.daily_bars
-        WHERE adjustment_type = :adj
-          AND bar_date <= :as_of
-          AND symbol_id = ANY(:symbol_ids)
-    ) ranked
-    WHERE rn <= :max_rows
-    ORDER BY symbol_id, rn
-    """
-).bindparams(bindparam("symbol_ids", type_=ARRAY(Integer)))
-
-_DAILY_SNAPSHOT_SQL = text(
-        """
-        SELECT symbol_id, ticker, bar_date, close, high, low
-        FROM market_data.daily_bars
-        WHERE adjustment_type = :adj
-            AND bar_date = :as_of
-            AND symbol_id = ANY(:symbol_ids)
-        ORDER BY symbol_id
-        """
-).bindparams(bindparam("symbol_ids", type_=ARRAY(Integer)))
-
 
 def resolve_symbols(conn: Connection, tickers: Sequence[str] | None = None) -> list[SymbolRef]:
     """Resolve target symbols.
@@ -120,29 +95,6 @@ def resolve_symbols(conn: Connection, tickers: Sequence[str] | None = None) -> l
     else:
         rows = conn.execute(_RESOLVE_ACTIVE_SQL).mappings()
     return [SymbolRef(symbol_id=row["id"], ticker=row["canonical_ticker"]) for row in rows]
-
-
-def latest_bar_date(conn: Connection, adjustment_type: str) -> date | None:
-    """Return ``MAX(bar_date)`` for the adjustment series, or ``None``."""
-    return conn.execute(_LATEST_BAR_DATE_SQL, {"adj": adjustment_type}).scalar()
-
-
-_TRADING_DATES_SQL = text(
-    "SELECT DISTINCT bar_date FROM market_data.daily_bars "
-    "WHERE adjustment_type = :adj AND bar_date BETWEEN :from_date AND :to_date "
-    "ORDER BY bar_date"
-)
-
-
-def trading_dates(
-    conn: Connection, adjustment_type: str, from_date: date, to_date: date
-) -> list[date]:
-    """Distinct bar dates present in the range (the effective trading calendar)."""
-    rows = conn.execute(
-        _TRADING_DATES_SQL,
-        {"adj": adjustment_type, "from_date": from_date, "to_date": to_date},
-    ).scalars()
-    return list(rows)
 
 
 def build_trailing_closes(rows: Iterable[Mapping]) -> dict[int, SymbolCloses]:
@@ -170,80 +122,93 @@ def build_trailing_closes(rows: Iterable[Mapping]) -> dict[int, SymbolCloses]:
     return result
 
 
-def read_trailing_closes(
-    conn: Connection,
-    symbol_ids: Sequence[int],
-    as_of: date,
-    adjustment_type: str,
-    max_lookback: int = DEFAULT_MAX_LOOKBACK,
-) -> dict[int, SymbolCloses]:
-    """Bulk-read trailing closes for ``symbol_ids`` as of ``as_of``.
+class BarsApiClient:
+    """HTTP client for the ``quant_daily_bars`` read API (spec §7).
 
-    Returns up to ``max_lookback + 1`` closes per symbol (most-recent-first).
+    ``quant_daily_bars`` owns the ``daily_bars`` schema, so all bar data is
+    fetched over ``GET /bars`` instead of by reading its table directly. Requests
+    use a timeout and exponential-backoff retry on 5xx / network errors; the
+    session and sleep function are injectable for network-free tests.
     """
-    if not symbol_ids:
-        return {}
-    rows = conn.execute(
-        _TRAILING_CLOSES_SQL,
-        {
-            "adj": adjustment_type,
-            "as_of": as_of,
-            "symbol_ids": list(symbol_ids),
-            "max_rows": max_lookback + 1,
-        },
-    ).mappings()
-    return build_trailing_closes(rows)
 
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout: float,
+        retry_count: int,
+        backoff_seconds: float,
+        session: requests.Session | None = None,
+        sleep=time.sleep,
+    ):
+        self._url = base_url.rstrip("/") + "/bars"
+        self._timeout = timeout
+        self._retries = retry_count
+        self._backoff = backoff_seconds
+        self._session = session or requests.Session()
+        self._sleep = sleep
 
-def read_daily_snapshots(
-    conn: Connection,
-    symbol_ids: Sequence[int],
-    as_of: date,
-    adjustment_type: str,
-) -> dict[int, DailyBarSnapshot]:
-    """Bulk-read one-day OHLC snapshots for ``symbol_ids`` on ``as_of``."""
-    if not symbol_ids:
-        return {}
-
-    rows = conn.execute(
-        _DAILY_SNAPSHOT_SQL,
-        {
-            "adj": adjustment_type,
-            "as_of": as_of,
-            "symbol_ids": list(symbol_ids),
-        },
-    ).mappings()
-
-    snapshots: dict[int, DailyBarSnapshot] = {}
-    for row in rows:
-        snapshots[row["symbol_id"]] = DailyBarSnapshot(
-            symbol_id=row["symbol_id"],
-            ticker=row["ticker"],
-            bar_date=row["bar_date"],
-            close=Decimal(str(row["close"])),
-            high=Decimal(str(row["high"])),
-            low=Decimal(str(row["low"])),
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "BarsApiClient":
+        return cls(
+            settings.quant_daily_bars_base_url,
+            timeout=settings.quant_daily_bars_timeout_seconds,
+            retry_count=settings.quant_daily_bars_retry_count,
+            backoff_seconds=settings.quant_daily_bars_backoff_seconds,
         )
-    return snapshots
 
+    def _get_bars(self, params: dict) -> list[dict]:
+        """Return the ``items`` list from ``GET /bars`` for ``params``."""
+        last_error: str | None = None
+        for attempt in range(self._retries + 1):
+            try:
+                response = self._session.get(self._url, params=params, timeout=self._timeout)
+            except requests.RequestException as exc:
+                last_error = str(exc)
+            else:
+                if response.status_code < 500:
+                    if response.status_code >= 400:
+                        raise RuntimeError(
+                            f"quant_daily_bars GET /bars failed: http {response.status_code}"
+                        )
+                    return (response.json() or {}).get("items", [])
+                last_error = f"server error {response.status_code}"
 
-class BarsReader:
-    """Engine-backed facade over the reader functions (one connection per call)."""
+            if attempt < self._retries:
+                self._sleep(self._backoff * (2 ** attempt))
 
-    def __init__(self, engine: Engine):
-        self._engine = engine
+        raise RuntimeError(f"quant_daily_bars GET /bars failed: {last_error}")
 
     def latest_bar_date(self, adjustment_type: str) -> date | None:
-        with self._engine.connect() as conn:
-            return latest_bar_date(conn, adjustment_type)
+        """Return ``MAX(bar_date)`` for the adjustment series, or ``None``."""
+        items = self._get_bars({"adjustment_type": adjustment_type, "limit": 1})
+        if not items:
+            return None
+        return date.fromisoformat(items[0]["bar_date"])
 
-    def resolve_symbols(self, tickers: Sequence[str] | None = None) -> list[SymbolRef]:
-        with self._engine.connect() as conn:
-            return resolve_symbols(conn, tickers)
-
-    def trading_dates(self, adjustment_type: str, from_date: date, to_date: date) -> list[date]:
-        with self._engine.connect() as conn:
-            return trading_dates(conn, adjustment_type, from_date, to_date)
+    def trading_dates(
+        self, adjustment_type: str, from_date: date, to_date: date
+    ) -> list[date]:
+        """Distinct bar dates present in the range (the effective trading calendar)."""
+        seen: set[date] = set()
+        offset = 0
+        page = 500
+        while True:
+            items = self._get_bars(
+                {
+                    "adjustment_type": adjustment_type,
+                    "from_date": from_date.isoformat(),
+                    "to_date": to_date.isoformat(),
+                    "limit": page,
+                    "offset": offset,
+                }
+            )
+            for item in items:
+                seen.add(date.fromisoformat(item["bar_date"]))
+            if len(items) < page:
+                break
+            offset += page
+        return sorted(seen)
 
     def read_trailing_closes(
         self,
@@ -252,8 +217,32 @@ class BarsReader:
         adjustment_type: str,
         max_lookback: int = DEFAULT_MAX_LOOKBACK,
     ) -> dict[int, SymbolCloses]:
-        with self._engine.connect() as conn:
-            return read_trailing_closes(conn, symbol_ids, as_of, adjustment_type, max_lookback)
+        """Fetch up to ``max_lookback + 1`` trailing closes per symbol (most-recent-first)."""
+        if not symbol_ids:
+            return {}
+        rows: list[dict] = []
+        for symbol_id in symbol_ids:
+            items = self._get_bars(
+                {
+                    "adjustment_type": adjustment_type,
+                    "symbol_id": symbol_id,
+                    "to_date": as_of.isoformat(),
+                    "limit": max_lookback + 1,
+                }
+            )
+            # ``GET /bars`` returns rows newest-first, so the position is the
+            # row's rank back from ``as_of``.
+            for rank, item in enumerate(items, start=1):
+                rows.append(
+                    {
+                        "symbol_id": item["symbol_id"],
+                        "ticker": item["ticker"],
+                        "bar_date": date.fromisoformat(item["bar_date"]),
+                        "close": item["close"],
+                        "rn": rank,
+                    }
+                )
+        return build_trailing_closes(rows)
 
     def read_daily_snapshots(
         self,
@@ -261,5 +250,68 @@ class BarsReader:
         as_of: date,
         adjustment_type: str,
     ) -> dict[int, DailyBarSnapshot]:
+        """Fetch the single ``as_of`` OHLC snapshot per symbol."""
+        if not symbol_ids:
+            return {}
+        snapshots: dict[int, DailyBarSnapshot] = {}
+        for symbol_id in symbol_ids:
+            items = self._get_bars(
+                {
+                    "adjustment_type": adjustment_type,
+                    "symbol_id": symbol_id,
+                    "from_date": as_of.isoformat(),
+                    "to_date": as_of.isoformat(),
+                    "limit": 1,
+                }
+            )
+            if not items:
+                continue
+            item = items[0]
+            snapshots[item["symbol_id"]] = DailyBarSnapshot(
+                symbol_id=item["symbol_id"],
+                ticker=item["ticker"],
+                bar_date=date.fromisoformat(item["bar_date"]),
+                close=Decimal(str(item["close"])),
+                high=Decimal(str(item["high"])),
+                low=Decimal(str(item["low"])),
+            )
+        return snapshots
+
+
+class BarsReader:
+    """Reader facade: symbols come from the DB, bars from the quant_daily_bars API.
+
+    ``symbol_master`` is owned by ``quant_symbols`` and still read directly; all
+    ``daily_bars`` access is delegated to :class:`BarsApiClient`.
+    """
+
+    def __init__(self, engine: Engine, api: BarsApiClient):
+        self._engine = engine
+        self._api = api
+
+    def latest_bar_date(self, adjustment_type: str) -> date | None:
+        return self._api.latest_bar_date(adjustment_type)
+
+    def resolve_symbols(self, tickers: Sequence[str] | None = None) -> list[SymbolRef]:
         with self._engine.connect() as conn:
-            return read_daily_snapshots(conn, symbol_ids, as_of, adjustment_type)
+            return resolve_symbols(conn, tickers)
+
+    def trading_dates(self, adjustment_type: str, from_date: date, to_date: date) -> list[date]:
+        return self._api.trading_dates(adjustment_type, from_date, to_date)
+
+    def read_trailing_closes(
+        self,
+        symbol_ids: Sequence[int],
+        as_of: date,
+        adjustment_type: str,
+        max_lookback: int = DEFAULT_MAX_LOOKBACK,
+    ) -> dict[int, SymbolCloses]:
+        return self._api.read_trailing_closes(symbol_ids, as_of, adjustment_type, max_lookback)
+
+    def read_daily_snapshots(
+        self,
+        symbol_ids: Sequence[int],
+        as_of: date,
+        adjustment_type: str,
+    ) -> dict[int, DailyBarSnapshot]:
+        return self._api.read_daily_snapshots(symbol_ids, as_of, adjustment_type)

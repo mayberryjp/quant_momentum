@@ -399,7 +399,7 @@ def _parse_tickers(raw: str | None) -> list[str] | None:
 
 def run_momentum_with_engine(engine, settings: Settings, *, submit: bool = False, **kwargs) -> RunSummary:
     """Build the engine-backed reader/store (and signals client) and execute a run."""
-    from quant_momentum.bars import BarsReader
+    from quant_momentum.bars import BarsApiClient, BarsReader
     from quant_momentum.persistence import MomentumStore
 
     submitter = None
@@ -414,7 +414,7 @@ def run_momentum_with_engine(engine, settings: Settings, *, submit: bool = False
         )
 
     return run_momentum(
-        reader=BarsReader(engine),
+        reader=BarsReader(engine, BarsApiClient.from_settings(settings)),
         store=MomentumStore(engine),
         settings=settings,
         submit=submit,
@@ -522,11 +522,11 @@ def run_summary_command(args) -> int:
 
 def backfill_with_engine(engine, settings: Settings, **kwargs) -> BackfillSummary:
     """Build the engine-backed reader/store and run a historical backfill."""
-    from quant_momentum.bars import BarsReader
+    from quant_momentum.bars import BarsApiClient, BarsReader
     from quant_momentum.persistence import MomentumStore
 
     return backfill(
-        reader=BarsReader(engine),
+        reader=BarsReader(engine, BarsApiClient.from_settings(settings)),
         store=MomentumStore(engine),
         settings=settings,
         **kwargs,

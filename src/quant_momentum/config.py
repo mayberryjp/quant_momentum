@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     quant_signals_retry_count: int = Field(default=3, alias="QUANT_SIGNALS_RETRY_COUNT")
     quant_signals_backoff_seconds: float = Field(default=0.5, alias="QUANT_SIGNALS_BACKOFF_SECONDS")
 
+    # -- quant_daily_bars client --------------------------------------
+    quant_daily_bars_base_url: str = Field(default="http://quant_daily_bars:8000", alias="QUANT_DAILY_BARS_BASE_URL")
+    quant_daily_bars_timeout_seconds: float = Field(default=10.0, alias="QUANT_DAILY_BARS_TIMEOUT_SECONDS")
+    quant_daily_bars_retry_count: int = Field(default=3, alias="QUANT_DAILY_BARS_RETRY_COUNT")
+    quant_daily_bars_backoff_seconds: float = Field(default=0.5, alias="QUANT_DAILY_BARS_BACKOFF_SECONDS")
+
     # -- Optional Redis (run lock / heartbeat only) -------------------
     quant_redis_url: str | None = Field(default=None, alias="QUANT_REDIS_URL")
 

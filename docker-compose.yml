@@ -38,6 +38,12 @@ services:
       QUANT_SIGNALS_RETRY_COUNT: "${QUANT_SIGNALS_RETRY_COUNT:-3}"
       QUANT_SIGNALS_BACKOFF_SECONDS: "${QUANT_SIGNALS_BACKOFF_SECONDS:-0.5}"
 
+      # -- quant_daily_bars client ------------------------------------------
+      QUANT_DAILY_BARS_BASE_URL: ${QUANT_DAILY_BARS_BASE_URL:-http://quant_daily_bars:8000}
+      QUANT_DAILY_BARS_TIMEOUT_SECONDS: "${QUANT_DAILY_BARS_TIMEOUT_SECONDS:-10}"
+      QUANT_DAILY_BARS_RETRY_COUNT: "${QUANT_DAILY_BARS_RETRY_COUNT:-3}"
+      QUANT_DAILY_BARS_BACKOFF_SECONDS: "${QUANT_DAILY_BARS_BACKOFF_SECONDS:-0.5}"
+
       # Set QUANT_REDIS_URL to enable the optional cross-instance run lock.
       QUANT_REDIS_URL: ${QUANT_REDIS_URL:-}
     ports:
