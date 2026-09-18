@@ -1,4 +1,4 @@
-"""Tests for the upstream bars reader (no live DB; fake connection)."""
+"""Tests for the upstream bars/symbols readers (no live DB or network; fakes)."""
 
 from __future__ import annotations
 
@@ -9,35 +9,9 @@ from quant_momentum.bars import (
     BarsApiClient,
     DailyBarSnapshot,
     SymbolRef,
+    SymbolsApiClient,
     build_trailing_closes,
-    resolve_symbols,
 )
-
-
-class _FakeResult:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def mappings(self):
-        return list(self._rows)
-
-    def scalar(self):
-        return self._rows
-
-    def scalars(self):
-        return list(self._rows)
-
-
-class _FakeConn:
-    """Minimal stand-in for a SQLAlchemy Connection."""
-
-    def __init__(self, rows):
-        self._rows = rows
-        self.calls: list[tuple[str, dict | None]] = []
-
-    def execute(self, statement, params=None):
-        self.calls.append((str(statement), params))
-        return _FakeResult(self._rows)
 
 
 def _row(symbol_id, ticker, bar_date, close, rn):
@@ -183,22 +157,44 @@ def test_read_daily_snapshots_short_circuits_on_empty_ids() -> None:
     assert client._session.calls == []
 
 
+def _symbols_client(handler) -> SymbolsApiClient:
+    return SymbolsApiClient(
+        "http://symbols.test",
+        timeout=1.0,
+        retry_count=0,
+        backoff_seconds=0.0,
+        session=_FakeSession(handler),
+    )
+
+
 def test_resolve_symbols_active_default() -> None:
-    rows = [{"id": 1, "canonical_ticker": "AAPL"}, {"id": 2, "canonical_ticker": "MSFT"}]
-    conn = _FakeConn(rows)
-    refs = resolve_symbols(conn)
+    client = _symbols_client(
+        lambda p: {
+            "items": [
+                {"id": 2, "canonical_ticker": "MSFT", "active": True},
+                {"id": 1, "canonical_ticker": "AAPL", "active": True},
+            ]
+        }
+    )
+    refs = client.resolve()
     assert refs == [SymbolRef(1, "AAPL"), SymbolRef(2, "MSFT")]
-    assert "active = true" in conn.calls[0][0].lower()
+    assert client._session.calls[0]["active"] == "true"
+    assert client._session.calls[0]["limit"] == 500
 
 
 def test_resolve_symbols_by_ticker_filter() -> None:
-    rows = [{"id": 1, "canonical_ticker": "AAPL"}]
-    conn = _FakeConn(rows)
-    refs = resolve_symbols(conn, tickers=["AAPL"])
+    # ``q`` is a substring search, so only exact canonical-ticker matches count.
+    client = _symbols_client(
+        lambda p: {
+            "items": [
+                {"id": 1, "canonical_ticker": "AAPL", "active": True},
+                {"id": 5, "canonical_ticker": "AAPLW", "active": True},
+            ]
+        }
+    )
+    refs = client.resolve(tickers=["AAPL"])
     assert refs == [SymbolRef(1, "AAPL")]
-    sql, params = conn.calls[0]
-    assert "canonical_ticker = any(:tickers)" in sql.lower()
-    assert params == {"tickers": ["AAPL"]}
+    assert client._session.calls[0]["q"] == "AAPL"
 
 
 def test_trading_dates_collects_distinct_sorted_dates() -> None:

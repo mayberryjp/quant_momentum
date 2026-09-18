@@ -1,25 +1,21 @@
 """Upstream data access: active symbols and trailing closes (spec §7).
 
-Active symbols are read from the shared ``symbol_master`` schema (owned by
-``quant_symbols``) with parameterized SQL. Daily bars are fetched from the
-``quant_daily_bars`` service over its HTTP API rather than by reading its
-``daily_bars`` table directly. The pure row-shaping logic
-(:func:`build_trailing_closes`) is separated from execution so it can be
-unit-tested without a live database or network.
+Active symbols are fetched from the ``quant_symbols`` service over its
+``GET /symbols`` HTTP API, and daily bars from the ``quant_daily_bars`` service
+over its ``GET /bars`` API, rather than by reading either service's tables
+directly. The pure row-shaping logic (:func:`build_trailing_closes`) is
+separated from execution so it can be unit-tested without a live network.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
 import requests
-from sqlalchemy import Text, bindparam, text
-from sqlalchemy.dialects.postgresql import ARRAY
-from sqlalchemy.engine import Connection, Engine
 
 from quant_momentum.config import Settings
 
@@ -30,7 +26,7 @@ DEFAULT_MAX_LOOKBACK = 30
 
 @dataclass(frozen=True)
 class SymbolRef:
-    """An active symbol resolved from ``symbol_master.symbols``."""
+    """An active symbol resolved from the ``quant_symbols`` API."""
 
     symbol_id: int
     ticker: str
@@ -71,30 +67,6 @@ class DailyBarSnapshot:
     close: Decimal
     high: Decimal
     low: Decimal
-
-
-_RESOLVE_ACTIVE_SQL = text(
-    "SELECT id, canonical_ticker FROM symbol_master.symbols "
-    "WHERE active = true ORDER BY id"
-)
-
-_RESOLVE_BY_TICKER_SQL = text(
-    "SELECT id, canonical_ticker FROM symbol_master.symbols "
-    "WHERE canonical_ticker = ANY(:tickers) ORDER BY id"
-).bindparams(bindparam("tickers", type_=ARRAY(Text)))
-
-
-def resolve_symbols(conn: Connection, tickers: Sequence[str] | None = None) -> list[SymbolRef]:
-    """Resolve target symbols.
-
-    With ``tickers`` given, resolves exactly those canonical tickers; otherwise
-    returns all active symbols.
-    """
-    if tickers:
-        rows = conn.execute(_RESOLVE_BY_TICKER_SQL, {"tickers": list(tickers)}).mappings()
-    else:
-        rows = conn.execute(_RESOLVE_ACTIVE_SQL).mappings()
-    return [SymbolRef(symbol_id=row["id"], ticker=row["canonical_ticker"]) for row in rows]
 
 
 def build_trailing_closes(rows: Iterable[Mapping]) -> dict[int, SymbolCloses]:
@@ -278,23 +250,117 @@ class BarsApiClient:
         return snapshots
 
 
-class BarsReader:
-    """Reader facade: symbols come from the DB, bars from the quant_daily_bars API.
+class SymbolsApiClient:
+    """HTTP client for the ``quant_symbols`` read API (spec §7).
 
-    ``symbol_master`` is owned by ``quant_symbols`` and still read directly; all
-    ``daily_bars`` access is delegated to :class:`BarsApiClient`.
+    ``quant_symbols`` owns the ``symbol_master`` schema, so active symbols are
+    resolved over ``GET /symbols`` instead of by reading its table directly.
+    Requests use a timeout and exponential-backoff retry on 5xx / network
+    errors; the session and sleep function are injectable for network-free tests.
     """
 
-    def __init__(self, engine: Engine, api: BarsApiClient):
-        self._engine = engine
+    # ``GET /symbols`` caps the page size at 500.
+    _PAGE_SIZE = 500
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout: float,
+        retry_count: int,
+        backoff_seconds: float,
+        session: requests.Session | None = None,
+        sleep=time.sleep,
+    ):
+        self._url = base_url.rstrip("/") + "/symbols"
+        self._timeout = timeout
+        self._retries = retry_count
+        self._backoff = backoff_seconds
+        self._session = session or requests.Session()
+        self._sleep = sleep
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "SymbolsApiClient":
+        return cls(
+            settings.quant_symbols_base_url,
+            timeout=settings.quant_symbols_timeout_seconds,
+            retry_count=settings.quant_symbols_retry_count,
+            backoff_seconds=settings.quant_symbols_backoff_seconds,
+        )
+
+    def _get_symbols(self, params: dict) -> list[dict]:
+        """Return the ``items`` list from ``GET /symbols`` for ``params``."""
+        last_error: str | None = None
+        for attempt in range(self._retries + 1):
+            try:
+                response = self._session.get(self._url, params=params, timeout=self._timeout)
+            except requests.RequestException as exc:
+                last_error = str(exc)
+            else:
+                if response.status_code < 500:
+                    if response.status_code >= 400:
+                        raise RuntimeError(
+                            f"quant_symbols GET /symbols failed: http {response.status_code}"
+                        )
+                    return (response.json() or {}).get("items", [])
+                last_error = f"server error {response.status_code}"
+
+            if attempt < self._retries:
+                self._sleep(self._backoff * (2 ** attempt))
+
+        raise RuntimeError(f"quant_symbols GET /symbols failed: {last_error}")
+
+    def _iter_symbols(self, params: dict) -> Iterator[dict]:
+        """Yield every item across all pages for ``params``."""
+        offset = 0
+        while True:
+            page = self._get_symbols({**params, "limit": self._PAGE_SIZE, "offset": offset})
+            yield from page
+            if len(page) < self._PAGE_SIZE:
+                break
+            offset += self._PAGE_SIZE
+
+    def resolve(self, tickers: Sequence[str] | None = None) -> list[SymbolRef]:
+        """Resolve target symbols, ordered by ``symbol_id``.
+
+        With ``tickers`` given, resolves exactly those canonical tickers;
+        otherwise returns all active symbols.
+        """
+        if tickers:
+            by_id: dict[int, SymbolRef] = {}
+            for ticker in tickers:
+                wanted = ticker.upper()
+                for item in self._iter_symbols({"q": ticker}):
+                    if item["canonical_ticker"].upper() == wanted:
+                        by_id[item["id"]] = SymbolRef(
+                            symbol_id=item["id"], ticker=item["canonical_ticker"]
+                        )
+            resolved: Iterable[SymbolRef] = by_id.values()
+        else:
+            resolved = [
+                SymbolRef(symbol_id=item["id"], ticker=item["canonical_ticker"])
+                for item in self._iter_symbols({"active": "true"})
+            ]
+        return sorted(resolved, key=lambda ref: ref.symbol_id)
+
+
+class BarsReader:
+    """Reader facade over the ``quant_symbols`` and ``quant_daily_bars`` APIs.
+
+    Symbol resolution is delegated to :class:`SymbolsApiClient` and all
+    ``daily_bars`` access to :class:`BarsApiClient`; neither reads another
+    service's tables directly.
+    """
+
+    def __init__(self, api: BarsApiClient, symbols_api: SymbolsApiClient):
         self._api = api
+        self._symbols = symbols_api
 
     def latest_bar_date(self, adjustment_type: str) -> date | None:
         return self._api.latest_bar_date(adjustment_type)
 
     def resolve_symbols(self, tickers: Sequence[str] | None = None) -> list[SymbolRef]:
-        with self._engine.connect() as conn:
-            return resolve_symbols(conn, tickers)
+        return self._symbols.resolve(tickers)
 
     def trading_dates(self, adjustment_type: str, from_date: date, to_date: date) -> list[date]:
         return self._api.trading_dates(adjustment_type, from_date, to_date)
