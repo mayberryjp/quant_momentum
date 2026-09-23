@@ -426,6 +426,29 @@ def run_momentum_with_engine(engine, settings: Settings, *, submit: bool = False
     )
 
 
+def _needs_catch_up(engine, settings: Settings) -> bool:
+    """True when newer bars exist than the latest recorded run (a scheduled slot was missed)."""
+    from quant_momentum.api.queries import get_latest_run
+    from quant_momentum.bars import BarsApiClient
+
+    try:
+        latest_bar = BarsApiClient.from_settings(settings).latest_bar_date(
+            settings.momentum_adjustment_type
+        )
+        if latest_bar is None:
+            return False
+        latest_run = get_latest_run(engine)
+        if latest_run is None:
+            return True
+        as_of = latest_run.get("as_of_bar_date")
+        if isinstance(as_of, str):
+            as_of = date.fromisoformat(as_of)
+        return as_of is None or latest_bar > as_of
+    except Exception:
+        log.exception("Startup catch-up check failed; skipping catch-up.")
+        return False
+
+
 def run_command(args) -> int:
     """CLI handler for ``momentum run`` (one-shot or ``--schedule``)."""
     from quant_momentum.db import get_engine
@@ -460,6 +483,12 @@ def run_command(args) -> int:
             return 2
 
         log.info("Starting daily momentum runs at %s %s.", run_at.isoformat(), tz.key)
+        if _needs_catch_up(engine, settings):
+            log.info("Startup catch-up: newer bars than the last recorded run; running now.")
+            try:
+                _once()
+            except Exception:
+                log.exception("Startup catch-up run failed; continuing to scheduled runs.")
         try:
             while True:
                 target = next_run_at(run_at, tz)
