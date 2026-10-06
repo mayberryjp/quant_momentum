@@ -115,12 +115,13 @@ def test_read_trailing_closes_orders_and_passes_params() -> None:
     assert result[1].ticker == "AAPL"
     assert [c.bar_date for c in result[1].closes] == [date(2026, 7, 6), date(2026, 7, 3)]
     assert [c.close for c in result[1].closes] == [Decimal("12.0"), Decimal("11.0")]
-    assert client._session.calls[0] == {
-        "adjustment_type": "unadjusted",
-        "symbol_id": 1,
-        "to_date": "2026-07-06",
-        "limit": 31,
-    }
+    call = client._session.calls[0]
+    assert "symbol_id" not in call  # one bulk scan, not a per-symbol request
+    assert call["adjustment_type"] == "unadjusted"
+    assert call["to_date"] == "2026-07-06"
+    assert call["from_date"] < call["to_date"]
+    assert call["limit"] == 500
+    assert call["offset"] == 0
 
 
 def test_read_trailing_closes_short_circuits_on_empty_ids() -> None:
@@ -144,10 +145,10 @@ def test_read_daily_snapshots_returns_symbol_map() -> None:
     )
     assert client._session.calls[0] == {
         "adjustment_type": "unadjusted",
-        "symbol_id": 1,
         "from_date": "2026-07-06",
         "to_date": "2026-07-06",
-        "limit": 1,
+        "limit": 500,
+        "offset": 0,
     }
 
 

@@ -92,6 +92,15 @@ class FakeStore:
     def upsert_daily_price_change(self, row):
         self.price_change_upserts.append(row)
 
+    def upsert_daily_momentum_bulk(self, rows):
+        rows = list(rows)
+        if any(r.symbol_id in self._fail for r in rows):
+            raise RuntimeError("boom")  # whole bulk upsert aborts (all-or-nothing)
+        self.upserts.extend(rows)
+
+    def upsert_daily_price_change_bulk(self, rows):
+        self.price_change_upserts.extend(rows)
+
     def prune_daily_price_changes(self, cutoff_date):
         self.pruned_cutoff = cutoff_date
 
@@ -163,16 +172,15 @@ def test_ordering_guard_skips_when_bars_missing() -> None:
     assert store.upserts == []
 
 
-def test_per_symbol_error_isolation() -> None:
+def test_bulk_write_failure_marks_run_failed() -> None:
+    # Bulk upserts are all-or-nothing: one bad row aborts the whole write and
+    # fails the run (no per-row isolation at the DB layer).
     reader, store = _standard_fixture(fail_symbol_ids={2})
     summary = run_momentum(reader=reader, store=store, settings=Settings())
-    assert summary.status == "completed"
-    assert summary.symbols_computed == 1
-    assert summary.symbols_failed == 1
-    assert summary.symbols_skipped == 1
-    assert summary.momentum_flagged == 1
-    assert len(store.upserts) == 1
-    assert store.finalized[1]["symbols_failed"] == 1
+    assert summary.status == "failed"
+    assert store.upserts == []  # momentum bulk rolled back, nothing recorded
+    assert store.finalized is not None
+    assert store.finalized[1]["status"] == "failed"
 
 
 def test_dry_run_does_not_write() -> None:

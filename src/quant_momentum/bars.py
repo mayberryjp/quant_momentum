@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import requests
@@ -103,6 +103,9 @@ class BarsApiClient:
     session and sleep function are injectable for network-free tests.
     """
 
+    # Page size for bulk ``GET /bars`` scans (mirrors the symbols API cap).
+    _PAGE_SIZE = 500
+
     def __init__(
         self,
         base_url: str,
@@ -151,6 +154,16 @@ class BarsApiClient:
 
         raise RuntimeError(f"quant_daily_bars GET /bars failed: {last_error}")
 
+    def _iter_bars(self, params: dict) -> Iterator[dict]:
+        """Yield every ``GET /bars`` item across all pages for ``params``."""
+        offset = 0
+        while True:
+            page = self._get_bars({**params, "limit": self._PAGE_SIZE, "offset": offset})
+            yield from page
+            if len(page) < self._PAGE_SIZE:
+                break
+            offset += self._PAGE_SIZE
+
     def latest_bar_date(self, adjustment_type: str) -> date | None:
         """Return ``MAX(bar_date)`` for the adjustment series, or ``None``."""
         items = self._get_bars({"adjustment_type": adjustment_type, "limit": 1})
@@ -189,25 +202,37 @@ class BarsApiClient:
         adjustment_type: str,
         max_lookback: int = DEFAULT_MAX_LOOKBACK,
     ) -> dict[int, SymbolCloses]:
-        """Fetch up to ``max_lookback + 1`` trailing closes per symbol (most-recent-first)."""
-        if not symbol_ids:
+        """Fetch up to ``max_lookback + 1`` trailing closes per symbol (most-recent-first).
+
+        One paged scan over ``GET /bars`` for the whole universe across a trailing
+        date window, instead of a request per symbol. The window is padded for
+        weekends/holidays so it comfortably spans ``max_lookback + 1`` trading days.
+        """
+        wanted = set(symbol_ids)
+        if not wanted:
             return {}
+        need = max_lookback + 1
+        from_date = as_of - timedelta(days=need * 7 // 5 + 10)
+        grouped: dict[int, list[dict]] = {}
+        for item in self._iter_bars(
+            {
+                "adjustment_type": adjustment_type,
+                "from_date": from_date.isoformat(),
+                "to_date": as_of.isoformat(),
+            }
+        ):
+            symbol_id = item["symbol_id"]
+            if symbol_id in wanted:
+                grouped.setdefault(symbol_id, []).append(item)
+
         rows: list[dict] = []
-        for symbol_id in symbol_ids:
-            items = self._get_bars(
-                {
-                    "adjustment_type": adjustment_type,
-                    "symbol_id": symbol_id,
-                    "to_date": as_of.isoformat(),
-                    "limit": max_lookback + 1,
-                }
-            )
-            # ``GET /bars`` returns rows newest-first, so the position is the
-            # row's rank back from ``as_of``.
-            for rank, item in enumerate(items, start=1):
+        for symbol_id, items in grouped.items():
+            # Newest-first, then keep only the most recent ``need`` closes.
+            items.sort(key=lambda r: r["bar_date"], reverse=True)
+            for rank, item in enumerate(items[:need], start=1):
                 rows.append(
                     {
-                        "symbol_id": item["symbol_id"],
+                        "symbol_id": symbol_id,
                         "ticker": item["ticker"],
                         "bar_date": date.fromisoformat(item["bar_date"]),
                         "close": item["close"],
@@ -222,25 +247,23 @@ class BarsApiClient:
         as_of: date,
         adjustment_type: str,
     ) -> dict[int, DailyBarSnapshot]:
-        """Fetch the single ``as_of`` OHLC snapshot per symbol."""
-        if not symbol_ids:
+        """Fetch the single ``as_of`` OHLC snapshot per symbol in one paged scan."""
+        wanted = set(symbol_ids)
+        if not wanted:
             return {}
         snapshots: dict[int, DailyBarSnapshot] = {}
-        for symbol_id in symbol_ids:
-            items = self._get_bars(
-                {
-                    "adjustment_type": adjustment_type,
-                    "symbol_id": symbol_id,
-                    "from_date": as_of.isoformat(),
-                    "to_date": as_of.isoformat(),
-                    "limit": 1,
-                }
-            )
-            if not items:
+        for item in self._iter_bars(
+            {
+                "adjustment_type": adjustment_type,
+                "from_date": as_of.isoformat(),
+                "to_date": as_of.isoformat(),
+            }
+        ):
+            symbol_id = item["symbol_id"]
+            if symbol_id not in wanted or symbol_id in snapshots:
                 continue
-            item = items[0]
-            snapshots[item["symbol_id"]] = DailyBarSnapshot(
-                symbol_id=item["symbol_id"],
+            snapshots[symbol_id] = DailyBarSnapshot(
+                symbol_id=symbol_id,
                 ticker=item["ticker"],
                 bar_date=date.fromisoformat(item["bar_date"]),
                 close=Decimal(str(item["close"])),

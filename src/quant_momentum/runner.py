@@ -157,6 +157,8 @@ def run_momentum(
             [s.symbol_id for s in symbols], resolved_as_of, adjustment
         )
         flagged: list[tuple[int, str, object]] = []
+        price_change_rows: list[DailyPriceChangeRow] = []
+        momentum_rows: list[DailyMomentumRow] = []
         for symbol in symbols:
             symbol_closes = closes_by_id.get(symbol.symbol_id)
 
@@ -177,9 +179,9 @@ def run_momentum(
                             computed_at=datetime.now().astimezone(),
                         )
                         if row is not None:
-                            store.upsert_daily_price_change(row)
+                            price_change_rows.append(row)
                     except Exception:
-                        log.exception("Daily price-change upsert failed for symbol_id=%s", symbol.symbol_id)
+                        log.exception("Daily price-change mapping failed for symbol_id=%s", symbol.symbol_id)
 
             if symbol_closes is None or symbol_closes.bars_available < _MIN_CLOSES_FOR_ANY_MOMENTUM:
                 summary.symbols_skipped += 1
@@ -193,7 +195,7 @@ def run_momentum(
                 )
                 ticker = symbol_closes.ticker or symbol.ticker
                 if not dry_run:
-                    store.upsert_daily_momentum(
+                    momentum_rows.append(
                         DailyMomentumRow.from_result(
                             result,
                             symbol_id=symbol.symbol_id,
@@ -208,9 +210,15 @@ def run_momentum(
                 if result.is_momentum:
                     summary.momentum_flagged += 1
                     flagged.append((symbol.symbol_id, ticker, result))
-            except Exception:  # per-symbol isolation
+            except Exception:  # per-symbol isolation for compute/mapping
                 summary.symbols_failed += 1
                 log.exception("Momentum computation failed for symbol_id=%s", symbol.symbol_id)
+
+        # One bulk upsert per table rather than one transaction per symbol, so a
+        # full-universe run makes a handful of DB round-trips instead of ~2 per symbol.
+        if not dry_run:
+            store.upsert_daily_price_change_bulk(price_change_rows)
+            store.upsert_daily_momentum_bulk(momentum_rows)
 
         if submit and submitter is not None and not dry_run and flagged:
             _submit_flagged(

@@ -8,6 +8,7 @@ symbol's failure is isolated (spec §7 per-symbol error isolation).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -325,6 +326,20 @@ class MomentumStore:
     def upsert_daily_price_change(self, row: DailyPriceChangeRow) -> None:
         with self._engine.begin() as conn:
             conn.execute(_UPSERT_DAILY_PRICE_CHANGE_SQL, asdict(row))
+
+    def upsert_daily_momentum_bulk(self, rows: Sequence[DailyMomentumRow]) -> None:
+        """Upsert every momentum row for a run in one transaction (one DB round-trip set)."""
+        if not rows:
+            return
+        with self._engine.begin() as conn:
+            conn.execute(_UPSERT_DAILY_MOMENTUM_SQL, [asdict(row) for row in rows])
+
+    def upsert_daily_price_change_bulk(self, rows: Sequence[DailyPriceChangeRow]) -> None:
+        """Upsert every daily price-change row for a run in one transaction."""
+        if not rows:
+            return
+        with self._engine.begin() as conn:
+            conn.execute(_UPSERT_DAILY_PRICE_CHANGE_SQL, [asdict(row) for row in rows])
 
     def prune_daily_price_changes(self, cutoff_date: date) -> None:
         with self._engine.begin() as conn:
